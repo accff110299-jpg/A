@@ -1,10 +1,5 @@
 name: TikTok Event Automation
-
-on:
-  workflow_dispatch:
-    inputs:
-      duration:
-        description: 'Duration in minutes (max 15)'
+)'
         required: true
         default: '10'
 
