@@ -6,7 +6,7 @@ on:
       duration:
         description: 'Duration in minutes (max 15)'
         required: true
-        default: '10'
+        default: '20'
 
 jobs:
   run-automation:
@@ -17,8 +17,8 @@ jobs:
       - name: Validate Duration
         run: |
           $duration = [int]"${{ github.event.inputs.duration }}"
-          if ($duration -gt 15) {
-            Write-Error "Duration cannot exceed 15 minutes"
+          if ($duration -gt 30) {
+            Write-Error "Duration cannot exceed 30 minutes"
             exit 1
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
