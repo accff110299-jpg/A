@@ -50,61 +50,137 @@ jobs:
 
       - name: Download and Setup Ngrok
         run: |
-          # Download ngrok (portable, không cần cài đặt)
+          Write-Host "Downloading ngrok..."
           $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
           $zipPath = "$env:TEMP\ngrok.zip"
           $extractPath = "$env:TEMP\ngrok"
           
-          Invoke-WebRequest -Uri $ngrokUrl -OutFile $zipPath
+          try {
+              Invoke-WebRequest -Uri $ngrokUrl -OutFile $zipPath -ErrorAction Stop
+              Write-Host "Download completed"
+          } catch {
+              Write-Error "Failed to download ngrok: $_"
+              exit 1
+          }
+          
           Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
           Remove-Item $zipPath -Force
           
-          # Cấu hình ngrok với authtoken
-          & "$extractPath\ngrok.exe" config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          # Kiểm tra ngrok.exe tồn tại
+          if (-not (Test-Path "$extractPath\ngrok.exe")) {
+              Write-Error "ngrok.exe not found after extraction"
+              exit 1
+          }
+          
+          Write-Host "Configuring ngrok authtoken..."
+          $authtoken = "${{ secrets.NGROK_AUTH_TOKEN }}"
+          if ([string]::IsNullOrEmpty($authtoken)) {
+              Write-Error "NGROK_AUTH_TOKEN is not set in secrets"
+              exit 1
+          }
+          
+          & "$extractPath\ngrok.exe" config add-authtoken $authtoken
+          Write-Host "Ngrok setup completed"
 
       - name: Start Ngrok Tunnel
         run: |
           $extractPath = "$env:TEMP\ngrok"
           
-          # Chạy ngrok trong background
-          Start-Process -FilePath "$extractPath\ngrok.exe" `
-                        -ArgumentList "tcp", "3389" `
-                        -WindowStyle Hidden
+          Write-Host "Starting ngrok tunnel for RDP (port 3389)..."
           
-          Write-Host "Waiting for ngrok to initialize..."
-          Start-Sleep -Seconds 5
+          # Tạo file config cho ngrok
+          $configContent = @"
+          version: "2"
+          authtoken: ${{ secrets.NGROK_AUTH_TOKEN }}
+          tunnels:
+            rdp:
+              proto: tcp
+              addr: 3389
+          "@
+          $configPath = "$env:TEMP\ngrok-config.yml"
+          $configContent | Out-File -FilePath $configPath -Encoding UTF8
           
-          # Lấy thông tin tunnel từ ngrok API
-          $maxRetries = 10
+          # Start ngrok với config file và redirect output
+          $logPath = "$env:TEMP\ngrok.log"
+          $process = Start-Process -FilePath "$extractPath\ngrok.exe" `
+                        -ArgumentList "start", "--all", "--config=$configPath", "--log=$logPath" `
+                        -WindowStyle Hidden `
+                        -PassThru `
+                        -RedirectStandardOutput "$env:TEMP\ngrok-stdout.log" `
+                        -RedirectStandardError "$env:TEMP\ngrok-stderr.log"
+          
+          Write-Host "Ngrok process started (PID: $($process.Id))"
+          Write-Host "Waiting for tunnel to establish..."
+          Start-Sleep -Seconds 10
+          
+          # Check process còn chạy không
+          if ($process.HasExited) {
+              Write-Host "Ngrok process exited unexpectedly!"
+              Write-Host "Exit code: $($process.ExitCode)"
+              if (Test-Path "$env:TEMP\ngrok-stderr.log") {
+                  Write-Host "Error log:"
+                  Get-Content "$env:TEMP\ngrok-stderr.log"
+              }
+              exit 1
+          }
+          
+          # Thử lấy tunnel info
+          $maxRetries = 20
           $retries = 0
           $tunnelInfo = $null
           
           while (-not $tunnelInfo -and $retries -lt $maxRetries) {
+              $retries++
+              Write-Host "Attempt $retries/$maxRetries..."
+              
               try {
-                  $response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-                  $tunnelInfo = $response.tunnels | Where-Object { $_.proto -eq "tcp" } | Select-Object -First 1
+                  # Test nếu API có response
+                  $testResponse = Invoke-WebRequest -Uri "http://localhost:4040/api/tunnels" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+                  Write-Host "API responded with status: $($testResponse.StatusCode)"
                   
-                  if ($tunnelInfo) {
-                      $publicUrl = $tunnelInfo.public_url
-                      # Parse host và port từ tcp://0.tcp.ngrok.io:12345
-                      if ($publicUrl -match "tcp://(.+):(\d+)") {
-                          $host = $matches[1]
-                          $port = $matches[2]
-                          echo "NGROK_HOST=$host" >> $env:GITHUB_ENV
-                          echo "NGROK_PORT=$port" >> $env:GITHUB_ENV
-                          break
+                  $response = $testResponse.Content | ConvertFrom-Json
+                  
+                  if ($response.tunnels -and $response.tunnels.Count -gt 0) {
+                      Write-Host "Found $($response.tunnels.Count) tunnel(s)"
+                      $tunnelInfo = $response.tunnels | Where-Object { $_.proto -eq "tcp" } | Select-Object -First 1
+                      
+                      if ($tunnelInfo) {
+                          $publicUrl = $tunnelInfo.public_url
+                          Write-Host "✓ Tunnel URL: $publicUrl"
+                          
+                          if ($publicUrl -match "tcp://([^:]+):(\d+)") {
+                              $host = $matches[1]
+                              $port = $matches[2]
+                              echo "NGROK_HOST=$host" >> $env:GITHUB_ENV
+                              echo "NGROK_PORT=$port" >> $env:GITHUB_ENV
+                              Write-Host "✓ Successfully configured: $host`:$port"
+                              break
+                          }
+                      } else {
+                          Write-Host "No TCP tunnel found in response"
                       }
+                  } else {
+                      Write-Host "No tunnels in response yet"
                   }
               } catch {
-                  Write-Host "Retry $retries..."
+                  Write-Host "API call failed: $($_.Exception.Message)"
               }
               
-              Start-Sleep -Seconds 2
-              $retries++
+              Start-Sleep -Seconds 3
           }
           
           if (-not $tunnelInfo) {
-              Write-Error "Failed to get ngrok tunnel info"
+              Write-Host "`n=== DEBUGGING INFO ==="
+              Write-Host "Ngrok process status:"
+              Get-Process ngrok -ErrorAction SilentlyContinue | Format-Table
+              
+              Write-Host "`nTrying to read ngrok logs..."
+              if (Test-Path $logPath) {
+                  Write-Host "Ngrok log content:"
+                  Get-Content $logPath -Tail 50
+              }
+              
+              Write-Error "Failed to get tunnel info after $maxRetries attempts"
               exit 1
           }
 
