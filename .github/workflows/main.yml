@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA FINAL VERSION - FIX VCLibs)
+name: TikTok Event Automation (WSA FINAL VERSION - FIX VCLibs LINK)
 
 on:
   workflow_dispatch:
@@ -62,10 +62,10 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # 4. Download VCLibs Dependency (LINK TƯƠNG THÍCH NHẤT VỚI WSA)
+          # 4. Download VCLibs Dependency (SỬ DỤNG LINK CŨ THEO YÊU CẦU CỦA BẠN)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading Microsoft VCLibs (Alternative Link)..."
-              $vclibsUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Dependencies/Microsoft.VCLibs.x64.14.00.appx"
+              Write-Host "Downloading Microsoft VCLibs from preferred link..."
+              $vclibsUrl = "https://raw.githubusercontent.com/aL3891/AppxInstaller/master/StandaloneMsi/Dependencies/Microsoft.VCLibs.x64.14.00.appx"
               Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
           }
 
