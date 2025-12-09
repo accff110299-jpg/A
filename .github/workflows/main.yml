@@ -18,14 +18,14 @@ jobs:
         run: |
           $duration = [int]"${{ github.event.inputs.duration }}"
           if ($duration -gt 30) {
-            Write-Error "Duration cannot exceed 30 minutes"
+            Write-Error "Duration cannot exceed 15 minutes"
             exit 1
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
 
       - name: Configure RDP & Create User (Parallel)
         run: |
-          # RDP Configuration
+          # RDP Configuration in background
           $rdpJob = Start-Job -ScriptBlock {
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
@@ -44,17 +44,18 @@ jobs:
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
           # Wait for RDP config
-          $rdpJob | Wait-Job | Receive-Job
+          $rdpJob | Wait-Job | Receive-Job | Out-Null
+          $rdpJob | Remove-Job
           Write-Host "✓ RDP configured and user created"
 
       - name: Download All Installers (Parallel)
         run: |
-          Write-Host "Downloading all installers in parallel..."
+          Write-Host "Downloading installers in parallel..."
           
           $downloads = @(
               @{
                   Name = "MEmu"
-                  Url = "https://dl.memuplay.com/MEmu_9.0.8.0_Offline_Installer.exe"
+                  Url = "https://dl.memuplay.com/download/MEmu-setup-abroad-a0d07d76.exe"
                   Path = "$env:TEMP\MEmu.exe"
               },
               @{
@@ -68,34 +69,66 @@ jobs:
           foreach ($dl in $downloads) {
               $jobs += Start-Job -ScriptBlock {
                   param($url, $path, $name)
-                  $ProgressPreference = 'SilentlyContinue'
-                  Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing
-                  Write-Output "✓ $name downloaded"
+                  try {
+                      $ProgressPreference = 'SilentlyContinue'
+                      $headers = @{
+                          'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                      }
+                      
+                      Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -Headers $headers -TimeoutSec 600
+                      
+                      if (Test-Path $path) {
+                          $size = [math]::Round((Get-Item $path).Length / 1MB, 2)
+                          Write-Output "✓ $name downloaded ($size MB)"
+                      } else {
+                          throw "File not found after download"
+                      }
+                  } catch {
+                      Write-Error "✗ $name failed: $($_.Exception.Message)"
+                      throw
+                  }
               } -ArgumentList $dl.Url, $dl.Path, $dl.Name
           }
           
-          # Wait for all downloads
-          $jobs | Wait-Job | Receive-Job
+          # Wait and check results
+          $results = $jobs | Wait-Job | Receive-Job
           $jobs | Remove-Job
-          Write-Host "✓ All downloads completed"
+          
+          $results | ForEach-Object { Write-Host $_ }
+          
+          # Verify both files exist
+          if (-not (Test-Path "$env:TEMP\MEmu.exe")) {
+              Write-Error "MEmu download failed"
+              exit 1
+          }
+          if (-not (Test-Path "$env:TEMP\tailscale.msi")) {
+              Write-Error "Tailscale download failed"
+              exit 1
+          }
+          
+          Write-Host "✓ All downloads completed successfully"
 
       - name: Install MEmu & Tailscale (Parallel)
         run: |
           Write-Host "Installing MEmu and Tailscale simultaneously..."
           
           # Start MEmu installation (async)
+          Write-Host "Starting MEmu installation..."
           $memuProcess = Start-Process -FilePath "$env:TEMP\MEmu.exe" -ArgumentList "/S" -PassThru -NoNewWindow
           
           # Install Tailscale while MEmu is installing
+          Write-Host "Installing Tailscale..."
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Write-Host "✓ Tailscale installed"
           
           # Wait for MEmu to finish
+          Write-Host "Waiting for MEmu installation to complete..."
           $memuProcess | Wait-Process
           Write-Host "✓ MEmu installed"
           
-          # Cleanup installers immediately
+          # Cleanup installers immediately to save disk space
           Remove-Item "$env:TEMP\MEmu.exe", "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
+          Write-Host "✓ Installers cleaned up"
 
       - name: Configure MEmu & Connect Tailscale (Parallel)
         run: |
@@ -108,25 +141,32 @@ jobs:
                 $WScriptShell = New-Object -ComObject WScript.Shell
                 $Shortcut = $WScriptShell.CreateShortcut("$desktop\MEmu.lnk")
                 $Shortcut.TargetPath = "$memuPath\MEmu.exe"
+                $Shortcut.WorkingDirectory = $memuPath
                 $Shortcut.Save()
-                Write-Output "✓ MEmu shortcut created"
+                Write-Output "✓ MEmu shortcut created on Desktop"
+            } else {
+                Write-Output "⚠ MEmu path not found: $memuPath"
             }
           }
           
           # Connect Tailscale immediately
-          Write-Host "Connecting to Tailscale..."
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=tiktok-$env:GITHUB_RUN_ID --accept-routes
+          Write-Host "Connecting to Tailscale network..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=tiktok-$env:GITHUB_RUN_ID --accept-routes --shields-up=false
           
-          # Get IP with retry
+          # Get IP with retry logic
           $tsIP = $null
-          for ($i = 0; $i -lt 10; $i++) {
+          $maxRetries = 10
+          for ($i = 1; $i -le $maxRetries; $i++) {
+              Write-Host "Attempting to get Tailscale IP (try $i/$maxRetries)..."
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
-              if ($tsIP) { break }
+              if ($tsIP) { 
+                  break 
+              }
               Start-Sleep -Seconds 2
           }
           
           if (-not $tsIP) {
-              Write-Error "Failed to get Tailscale IP"
+              Write-Error "Failed to get Tailscale IP after $maxRetries attempts"
               exit 1
           }
           
@@ -134,8 +174,9 @@ jobs:
           Write-Host "✓ Tailscale connected: $tsIP"
           
           # Wait for MEmu config
-          $memuJob | Wait-Job | Receive-Job | Write-Host
+          $memuResult = $memuJob | Wait-Job | Receive-Job
           $memuJob | Remove-Job
+          Write-Host $memuResult
 
       - name: System Info & Connection Details
         run: |
@@ -148,24 +189,39 @@ jobs:
           Write-Host "⏱️  Duration: $env:DURATION minutes"
           Write-Host ""
           Write-Host "📦 Installed Software:"
-          Write-Host "   ✓ MEmu Emulator (Desktop)"
+          Write-Host "   ✓ MEmu Emulator (Desktop shortcut)"
           Write-Host "   ✓ Tailscale VPN"
           Write-Host ""
           Write-Host "💻 System Resources:"
-          $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
-          $ram = Get-CimInstance -ClassName Win32_ComputerSystem
-          Write-Host "   CPU: $($cpu.Name)"
-          Write-Host "   RAM: $([math]::Round($ram.TotalPhysicalMemory/1GB, 2)) GB"
-          Write-Host "   Cores: $($cpu.NumberOfCores) cores / $($cpu.NumberOfLogicalProcessors) threads"
+          try {
+              $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
+              $ram = Get-CimInstance -ClassName Win32_ComputerSystem
+              $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'"
+              
+              Write-Host "   CPU: $($cpu.Name)"
+              Write-Host "   RAM: $([math]::Round($ram.TotalPhysicalMemory/1GB, 2)) GB"
+              Write-Host "   Cores: $($cpu.NumberOfCores) cores / $($cpu.NumberOfLogicalProcessors) threads"
+              Write-Host "   Disk Free: $([math]::Round($disk.FreeSpace/1GB, 2)) GB"
+          } catch {
+              Write-Host "   (System info unavailable)"
+          }
+          Write-Host ""
+          Write-Host "🔗 How to Connect:"
+          Write-Host "   1. Make sure Tailscale is running on your PC"
+          Write-Host "   2. Open Remote Desktop Connection (mstsc)"
+          Write-Host "   3. Computer: $env:TAILSCALE_IP"
+          Write-Host "   4. Login with credentials above"
           Write-Host "=========================================`n"
 
       - name: Keep Session Alive
         run: |
           $endTime = (Get-Date).AddMinutes($env:DURATION)
           $lastCheck = Get-Date
+          $lastHealthCheck = Get-Date
           
           Write-Host "🚀 Session started at $(Get-Date -Format 'HH:mm:ss')"
-          Write-Host "⏰ Session will end at $($endTime.ToString('HH:mm:ss'))`n"
+          Write-Host "⏰ Session will end at $($endTime.ToString('HH:mm:ss'))"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`n"
           
           while ((Get-Date) -lt $endTime) {
               $now = Get-Date
@@ -177,29 +233,52 @@ jobs:
                   $secs = [math]::Round(($remaining - $mins) * 60)
                   Write-Host "[$($now.ToString('HH:mm:ss'))] ⚡ Active - $mins min $secs sec remaining"
                   $lastCheck = $now
-                  
-                  # Health check
-                  $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json 2>$null | ConvertFrom-Json
-                  if (-not $tsStatus) {
-                      Write-Warning "⚠️  Tailscale connection lost, reconnecting..."
-                      & "$env:ProgramFiles\Tailscale\tailscale.exe" up
+              }
+              
+              # Health check every 2 minutes
+              if (($now - $lastHealthCheck).TotalMinutes -ge 2) {
+                  try {
+                      $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json 2>$null | ConvertFrom-Json
+                      if (-not $tsStatus) {
+                          Write-Warning "⚠️  Tailscale connection lost, attempting reconnect..."
+                          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+                          Start-Sleep -Seconds 5
+                      }
+                  } catch {
+                      Write-Warning "⚠️  Health check failed: $($_.Exception.Message)"
                   }
+                  $lastHealthCheck = $now
               }
               
               Start-Sleep -Seconds 5
           }
           
-          Write-Host "`n⏱️  Session time expired. Cleaning up..."
+          Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host "⏱️  Session time expired. Initiating cleanup..."
 
       - name: Cleanup
         if: always()
         run: |
-          Write-Host "🧹 Cleaning up..."
+          Write-Host "`n🧹 Cleaning up resources..."
           
           # Disconnect Tailscale
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
+          try {
+              & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
+              Write-Host "✓ Tailscale disconnected"
+          } catch {
+              Write-Host "⚠ Tailscale disconnect failed (may already be down)"
+          }
           
           # Remove temporary user
-          Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
+          try {
+              Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
+              Write-Host "✓ Temporary user removed"
+          } catch {
+              Write-Host "⚠ User removal failed (may not exist)"
+          }
           
-          Write-Host "✅ Cleanup completed"
+          # Clean up any remaining temp files
+          Remove-Item "$env:TEMP\MEmu*.exe", "$env:TEMP\tailscale*.msi" -Force -ErrorAction SilentlyContinue
+          
+          Write-Host "✅ Cleanup completed successfully"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
