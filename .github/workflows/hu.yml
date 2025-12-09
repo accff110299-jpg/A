@@ -167,6 +167,47 @@ jobs:
         
         echo "✅ Cài đặt emulator hoàn tất"
     
+    - name: Install TikTok
+      run: |
+        echo "📦 Đang tải TikTok APK v42.9.3..."
+        
+        # Download TikTok APK từ link bạn cung cấp
+        wget --user-agent="Mozilla/5.0" \
+          -O tiktok.apk \
+          "https://d-e03.winudf.com/b/APK/Y29tLnpoaWxpYW9hcHAubXVzaWNhbGx5XzIwMjQyMDkwMzBfODQ0NzcxZWE?_fn=VGlrVG9rIC0gVmlkZW9zLCBTaG9wICYgTElWRV80Mi45LjNfQVBLUHVyZS5hcGs&_p=Y29tLnpoaWxpYW9hcHAubXVzaWNhbGx5&download_id=otr_1124602165356072&is_hot=true&k=2b9c1038472fff6a9c32ba31e2fd9dff693903ea&uu=https%3A%2F%2Fd-02.winudf.com%2Fb%2FAPK%2FY29tLnpoaWxpYW9hcHAubXVzaWNhbGx5XzIwMjQyMDkwMzBfODQ0NzcxZWE%3Fk%3Dff5f89f9fd76c90ded027d32c405dc3e693903ea"
+        
+        # Kiểm tra file có tải về không
+        if [ -f tiktok.apk ]; then
+          FILE_SIZE=$(du -h tiktok.apk | cut -f1)
+          echo "✅ Đã tải TikTok APK (${FILE_SIZE})"
+          
+          echo "📲 Đang cài đặt TikTok..."
+          $ANDROID_SDK_ROOT/platform-tools/adb install -r tiktok.apk
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ TikTok v42.9.3 đã được cài đặt thành công!"
+            
+            # Grant permissions cho TikTok
+            echo "🔐 Cấp quyền cho TikTok..."
+            $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.CAMERA || true
+            $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.RECORD_AUDIO || true
+            $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.READ_EXTERNAL_STORAGE || true
+            $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.WRITE_EXTERNAL_STORAGE || true
+            $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.ACCESS_FINE_LOCATION || true
+            $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.ACCESS_COARSE_LOCATION || true
+            
+            echo "✅ Đã cấp quyền cho TikTok"
+          else
+            echo "❌ Cài đặt TikTok thất bại!"
+          fi
+        else
+          echo "❌ Không thể tải TikTok APK!"
+          echo "⚠️ Bạn có thể:"
+          echo "   1. Mở Play Store trong emulator"
+          echo "   2. Tìm và cài TikTok thủ công"
+          echo "   3. Hoặc upload APK file qua browser"
+        fi
+    
     - name: Display Connection Info
       run: |
         echo "=================================="
@@ -180,9 +221,13 @@ jobs:
         echo "Android Version: API ${{ inputs.android_version }}"
         echo "Duration: ${{ inputs.duration }} minutes"
         echo ""
+        echo "📲 Pre-installed Apps:"
+        echo "   ✅ TikTok"
+        echo ""
         echo "=================================="
         echo "💡 Tips:"
-        echo "- Có thể cài APK qua adb"
+        echo "- TikTok đã được cài sẵn"
+        echo "- Có thể cài thêm APK qua drag & drop"
         echo "- Có thể dùng Google Play Store"
         echo "- Control emulator qua mouse/keyboard"
         echo "=================================="
