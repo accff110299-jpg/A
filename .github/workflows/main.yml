@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA FINAL VERSION - CÚ PHÁP SẠCH)
+name: TikTok Event Automation (WSA FINAL FIX: VCLibs Link Mới)
 
 on:
   workflow_dispatch:
@@ -65,11 +65,12 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # 4. Download VCLibs Deployment Script (Link bạn cung cấp)
+          # 4. Download VCLibs Dependency (SỬ DỤNG LINK MỚI BẠN CUNG CẤP)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading VCLibs Deployment Script..."
-              $vclibsScriptUrl = "https://raw.githubusercontent.com/gabriel-vanca/VCLibs/main/Deploy_MS_VCLibs.ps1"
-              Invoke-WebRequest -Uri $vclibsScriptUrl -OutFile "$env:TEMP\Deploy_VCLibs.ps1" -UseBasicParsing
+              Write-Host "Downloading Microsoft VCLibs from user's link..."
+              # Raw URL cho file VCLibs bạn cung cấp
+              $vclibsUrl = "https://raw.githubusercontent.com/aL3891/AppxInstaller/master/StandaloneMsi/Dependencies/Microsoft.VCLibs.x64.14.00.appx"
+              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
           }
 
           # Wait for jobs and Install Tailscale
@@ -82,16 +83,18 @@ jobs:
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           Write-Host "Prerequisite setup completed!"
 
-      - name: Deploy VCLibs Dependencies
+      - name: Install VCLibs Dependency (Direct Appx Install)
         run: |
-          Write-Host "Running VCLibs Deployment Script..."
-          # Chạy script PowerShell đã tải về
-          & "$env:TEMP\Deploy_VCLibs.ps1"
-          if ($LASTEXITCODE -ne 0) {
-             Write-Error "VCLibs deployment script failed."
-             exit 1
+          Write-Host "Installing VCLibs Framework..."
+          try {
+             # Cài đặt file .appx đã tải xuống
+             Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
+             Write-Host "VCLibs Installed Successfully. Ready for WSA."
+             Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
+          } catch {
+             Write-Error "CRITICAL: VCLibs installation failed even with the direct file. Check the file's compatibility."
+             exit 1 
           }
-          Write-Host "VCLibs deployed successfully."
       
       - name: Install WSA Package
         run: |
@@ -108,7 +111,7 @@ jobs:
              Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
           }
 
-          # Tải và Cài đặt WSA (Link cứng bạn cung cấp)
+          # Tải và Cài đặt WSA (Link cứng bạn cung cấp trước đó)
           try {
               $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
               
