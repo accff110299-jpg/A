@@ -23,13 +23,12 @@ jobs:
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
 
-      - name: Setup Everything (Parallel)
+      - name: Setup Prerequisites (Parallel)
         run: |
-          # RDP + User + Tailscale + WSA + 7-Zip Install - ALL PARALLEL
-          $jobs = @()
-          
           # Job 1: RDP Configuration
+          $jobs = @()
           $jobs += Start-Job -ScriptBlock {
+            Write-Host "Configuring RDP..."
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
             netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
@@ -39,6 +38,7 @@ jobs:
           
           # Job 2: Download Tailscale
           $jobs += Start-Job -ScriptBlock {
+            Write-Host "Downloading Tailscale..."
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
           }
@@ -53,11 +53,9 @@ jobs:
           }
           
           # Job 4: Download VCLibs Dependency
-          # Đây là file framework mà WSA yêu cầu
           $jobs += Start-Job -ScriptBlock {
               Write-Host "Downloading VCLibs Dependency..."
               $vclibsUrl = "https://www.dependencywalker.com/microsoft.vclibs.140.00.appx" 
-              # NOTE: Đây là link công cộng an toàn, thường được dùng để cài VCLibs.
               Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
           }
 
@@ -70,8 +68,8 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
-          # Wait for jobs (Bao gồm cả VCLibs)
-          Write-Host "Waiting for setup downloads..."
+          # Wait for jobs
+          Write-Host "Waiting for prerequisite downloads..."
           $jobs | Wait-Job | Out-Null
           $jobs | Receive-Job
           $jobs | Remove-Job
@@ -79,25 +77,29 @@ jobs:
           # Install Tailscale 
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
-          
-          # 5. Cài đặt VCLibs TỪ FILE ĐÃ TẢI XUỐNG
+          Write-Host "Prerequisite setup completed!"
+
+      - name: Install VCLibs Dependency (FIXED SYNTAX)
+        run: |
           Write-Host "Installing VCLibs (Required Framework)..."
           try {
+             # Nếu lệnh này thất bại, nó sẽ ném lỗi và làm dừng step này
              Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
              Write-Host "VCLibs Installed Successfully."
              Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
           } catch {
-             Write-Error "CRITICAL: VCLibs installation failed. WSA cannot be installed."
-             exit 1 # Dừng nếu thư viện nền tảng thất bại
+             Write-Error "CRITICAL: VCLibs installation failed. Please check the VCLibs download link or file integrity."
+             # Setting Exit Code để đảm bảo step này thất bại và dừng Job
+             exit 1 
           }
-
-          # 6. Cài đặt WSA (Dùng Link Cứng đã Fix)
+      
+      - name: Install WSA Package
+        run: |
           Write-Host "Starting WSA installation using your provided URL..."
           $wsaDir = "C:\WSA"
           New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
           
-          # 6a. Cài UI.Xaml
-          # UI.Xaml đã được xử lý ở các lần trước, nhưng vẫn cần thiết
+          # Cài UI.Xaml (dependency phụ)
           try {
              $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
              Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
@@ -106,7 +108,7 @@ jobs:
              Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
           }
 
-          # 6b. Tải và Cài đặt WSA 
+          # Tải và Cài đặt WSA
           try {
               $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
               
@@ -122,7 +124,6 @@ jobs:
               
               if ($manifestPath) {
                   Write-Host "Installing WSA..."
-                  # Lệnh này sẽ thành công vì VCLibs đã được cài ở Bước 5
                   Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
                   Write-Host "WSA Success! (Finally!)"
               } else {
@@ -130,9 +131,8 @@ jobs:
               }
           } catch {
               Write-Error "WSA INSTALL FAILED: $_"
+              exit 1
           }
-          
-          Write-Host "Setup completed!"
 
       - name: Connect Tailscale & Get IP
         run: |
@@ -156,7 +156,7 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (VCLibs FIXED)"
+          Write-Host "RDP SESSION READY (FINAL FIX APPLIED)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
