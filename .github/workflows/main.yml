@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA FINAL VERSION)
+name: TikTok Event Automation (WSA FINAL VERSION - VCLibs Script Fix)
 
 on:
   workflow_dispatch:
@@ -65,11 +65,11 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # Job 4: Download VCLibs Dependency
+          # Job 4: Download VCLibs Deployment Script (Dùng script bạn cung cấp)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading VCLibs Dependency..."
-              $vclibsUrl = "https://www.dependencywalker.com/microsoft.vclibs.140.00.appx" 
-              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
+              Write-Host "Downloading VCLibs Deployment Script..."
+              $vclibsScriptUrl = "https://raw.githubusercontent.com/gabriel-vanca/VCLibs/main/Deploy_MS_VCLibs.ps1"
+              Invoke-WebRequest -Uri $vclibsScriptUrl -OutFile "$env:TEMP\Deploy_VCLibs.ps1" -UseBasicParsing
           }
 
           # Wait for jobs and Install Tailscale
@@ -82,17 +82,16 @@ jobs:
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           Write-Host "Prerequisite setup completed!"
 
-      - name: Install VCLibs Dependency
+      - name: Deploy VCLibs Dependencies (Sử dụng Script từ Github)
         run: |
-          Write-Host "Installing VCLibs (Required Framework)..."
-          try {
-             Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
-             Write-Host "VCLibs Installed Successfully."
-             Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
-          } catch {
-             Write-Error "CRITICAL: VCLibs installation failed. WSA cannot be installed."
-             exit 1 
+          Write-Host "Running VCLibs Deployment Script..."
+          # Chạy script PowerShell đã tải về
+          & "$env:TEMP\Deploy_VCLibs.ps1"
+          if ($LASTEXITCODE -ne 0) {
+             Write-Error "VCLibs deployment script failed."
+             exit 1
           }
+          Write-Host "VCLibs deployed successfully."
       
       - name: Install WSA Package
         run: |
@@ -126,7 +125,7 @@ jobs:
               if ($manifestPath) {
                   Write-Host "Installing WSA..."
                   Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
-                  Write-Host "WSA Success! (Finally!)"
+                  Write-Host "WSA Success! (FINALLY!)"
               } else {
                   throw "Error: AppxManifest.xml not found after extraction."
               }
@@ -157,7 +156,7 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (FINAL FIX APPLIED)"
+          Write-Host "RDP SESSION READY (ALL FIXES APPLIED)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
