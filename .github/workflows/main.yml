@@ -4,20 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: 'Duration in minutes (max 15)'
+        description: 'Duration in minutes (max 30)'
         required: true
-        default: '15'
+        default: '30'
 
 jobs:
   run-automation:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Validate Duration
         run: |
           $duration = [int]"${{ github.event.inputs.duration }}"
-          if ($duration -gt 15) {
+          if ($duration -gt 30) {
             Write-Error "Duration cannot exceed 15 minutes"
             exit 1
           }
