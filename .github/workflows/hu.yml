@@ -11,7 +11,7 @@ on:
       android_version:
         description: 'Android API Level'
         required: true
-        default: '30'
+        default: '29'
         type: choice
         options:
           - '29'
@@ -65,30 +65,53 @@ jobs:
         sudo apt-get install -y -qq xvfb x11vnc fluxbox wmctrl
     
     - name: Setup Android SDK
-      if: steps.avd-cache.outputs.cache-hit != 'true' || inputs.setup_mode == 'fresh'
       uses: android-actions/setup-android@v3
     
-    - name: Install System Image (if needed)
-      if: steps.avd-cache.outputs.cache-hit != 'true' || inputs.setup_mode == 'fresh'
+    - name: Install System Image
       run: |
+        echo "📦 Cài đặt Android SDK components..."
         yes | sdkmanager --licenses || true
         sdkmanager "system-images;android-${{ inputs.android_version }};google_apis;x86_64"
         sdkmanager "platform-tools" "emulator"
-    
-    - name: Create AVD (if not cached)
-      if: steps.avd-cache.outputs.cache-hit != 'true' || inputs.setup_mode == 'fresh'
-      run: |
-        echo "🔧 Tạo AVD mới..."
-        echo "no" | avdmanager create avd -n test_avd -k "system-images;android-${{ inputs.android_version }};google_apis;x86_64" -d "pixel_5" -f
         
-        # Verify AVD was created
-        if [ ! -f ~/.android/avd/test_avd.ini ]; then
-          echo "❌ Failed to create AVD!"
-          exit 1
+        echo "✅ Đã cài system image:"
+        sdkmanager --list | grep "system-images;android-${{ inputs.android_version }}"
+    
+    - name: Create or Restore AVD
+      run: |
+        export ANDROID_AVD_HOME=$HOME/.android/avd
+        
+        # Kiểm tra xem có AVD từ cache không
+        if [ -f ~/.android/avd/test_avd.ini ] && [ "${{ inputs.setup_mode }}" != "fresh" ]; then
+          echo "📸 Dùng AVD từ cache"
+          ls -la ~/.android/avd/
+        else
+          echo "🔧 Tạo AVD mới..."
+          
+          # Xóa AVD cũ nếu có
+          rm -rf ~/.android/avd/test_avd.* ~/.android/avd/test_avd 2>/dev/null || true
+          
+          # Tạo AVD mới
+          echo "no" | avdmanager create avd \
+            -n test_avd \
+            -k "system-images;android-${{ inputs.android_version }};google_apis;x86_64" \
+            -d "pixel_5" \
+            -f
+          
+          # Verify
+          if [ ! -f ~/.android/avd/test_avd.ini ]; then
+            echo "❌ Failed to create AVD!"
+            echo "Available system images:"
+            sdkmanager --list_installed | grep system-images
+            exit 1
+          fi
+          
+          echo "✅ AVD created successfully"
         fi
         
-        echo "✅ AVD created successfully"
-        ls -la ~/.android/avd/
+        echo ""
+        echo "📋 Available AVDs:"
+        avdmanager list avd
     
     - name: Download TikTok APK (if not cached)
       if: steps.apk-cache.outputs.cache-hit != 'true'
@@ -164,17 +187,10 @@ jobs:
         export DISPLAY=:99
         export ANDROID_AVD_HOME=$HOME/.android/avd
         
-        # Kiểm tra AVD có tồn tại không
-        if [ ! -f ~/.android/avd/test_avd.ini ]; then
-          echo "❌ AVD không tồn tại! Đang tạo mới..."
-          echo "no" | avdmanager create avd -n test_avd \
-            -k "system-images;android-${{ inputs.android_version }};google_apis;x86_64" \
-            -d "pixel_5" -f
-        fi
-        
         echo "📋 Available AVDs:"
-        $ANDROID_SDK_ROOT/emulator/emulator -list-avds
+        avdmanager list avd
         
+        echo ""
         echo "⚡ Khởi động emulator..."
         
         # Sử dụng snapshot nếu có (SIÊU NHANH)
@@ -182,12 +198,12 @@ jobs:
           echo "📸 Dùng snapshot có sẵn - SIÊU NHANH!"
           $ANDROID_SDK_ROOT/emulator/emulator -avd test_avd \
             -no-audio -gpu swiftshader_indirect -memory 4096 \
-            -no-boot-anim &
+            -no-boot-anim -no-window &
         else
           echo "🆕 Boot lần đầu (sẽ tạo snapshot)"
           $ANDROID_SDK_ROOT/emulator/emulator -avd test_avd \
             -no-audio -gpu swiftshader_indirect -memory 4096 \
-            -no-boot-anim &
+            -no-boot-anim -no-window &
         fi
         
         # Đợi device với timeout
