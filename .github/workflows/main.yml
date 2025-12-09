@@ -1,4 +1,4 @@
-name: TikTok Event Automation
+name: TikTok Event Automation (WSA + PlayStore)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Setup Everything (Parallel)
         run: |
-          # RDP + User + Tailscale install - ALL PARALLEL
+          # RDP + User + Tailscale + WSA (Google Play) - ALL PARALLEL
           $jobs = @()
           
           # Job 1: RDP Configuration
@@ -42,6 +42,42 @@ jobs:
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
           }
+
+          # Job 3: Download & Install WSA (MagiskOnWSA - with Google Play)
+          $jobs += Start-Job -ScriptBlock {
+             $ProgressPreference = 'SilentlyContinue'
+             Write-Host "Downloading WSA with Google Play..."
+             
+             # Tạo thư mục làm việc
+             $wsaDir = "C:\WSA"
+             New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
+             
+             # Cài đặt Dependencies cần thiết cho WSA (UI.Xaml)
+             $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
+             Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
+             Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
+
+             # Link tải bản WSA + GApps + Magisk (Stable)
+             # Lưu ý: Link này lấy từ kho lưu trữ build sẵn. Nếu link die cần thay link release mới từ Github MagiskOnWSA
+             $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2307.40000.4.0/WSA_2307.40000.4.0_x64_Release-Nightly-MindTheGapps-13.0-Magisk-26.1.zip"
+             
+             Invoke-WebRequest -Uri $wsaUrl -OutFile "$wsaDir\wsa.zip"
+             
+             Write-Host "Extracting WSA..."
+             Expand-Archive -Path "$wsaDir\wsa.zip" -DestinationPath "$wsaDir\Install" -Force
+             
+             # Tìm file AppxManifest.xml trong thư mục vừa giải nén (thường nó nằm trong thư mục con)
+             $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
+             
+             if ($manifestPath) {
+                 Write-Host "Registering WSA..."
+                 # Đăng ký ứng dụng vào Windows
+                 Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
+                 Write-Host "WSA Installed successfully."
+             } else {
+                 Write-Host "Failed to find AppxManifest.xml"
+             }
+          }
           
           # Create user immediately (not in background)
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
@@ -53,18 +89,20 @@ jobs:
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
           # Wait for background jobs
+          Write-Host "Waiting for downloads and installations..."
           $jobs | Wait-Job | Out-Null
+          $jobs | Receive-Job
           $jobs | Remove-Job
           
           # Install Tailscale immediately
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           
-          Write-Host "Setup completed in record time!"
+          Write-Host "Setup completed!"
 
       - name: Connect Tailscale & Get IP
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-$env:GITHUB_RUN_ID --accept-routes --shields-up=false
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-wsa-$env:GITHUB_RUN_ID --accept-routes --shields-up=false
           
           $tsIP = $null
           for ($i = 1; $i -le 8; $i++) {
@@ -84,13 +122,13 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY"
+          Write-Host "RDP SESSION READY (WSA INSTALLED)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
           Write-Host "Pass: $env:RDP_PASSWORD"
           Write-Host "Time: $env:DURATION minutes"
-          Write-Host "Ends: $((Get-Date).AddMinutes($env:DURATION).ToString('HH:mm:ss'))"
+          Write-Host "NOTE: Search for 'Play Store' in Start Menu"
           Write-Host "=========================================="
 
       - name: Keep Alive
