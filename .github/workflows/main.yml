@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA Final URL Provided)
+name: TikTok Event Automation (WSA Final Fix: VCLibs Dependency)
 
 on:
   workflow_dispatch:
@@ -51,6 +51,15 @@ jobs:
              Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\7zip.msi", "/quiet", "/norestart" -Wait -NoNewWindow
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
+          
+          # Job 4: Download VCLibs Dependency
+          # Đây là file framework mà WSA yêu cầu
+          $jobs += Start-Job -ScriptBlock {
+              Write-Host "Downloading VCLibs Dependency..."
+              $vclibsUrl = "https://www.dependencywalker.com/microsoft.vclibs.140.00.appx" 
+              # NOTE: Đây là link công cộng an toàn, thường được dùng để cài VCLibs.
+              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
+          }
 
           # User Setup
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
@@ -61,7 +70,7 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
-          # Wait for jobs
+          # Wait for jobs (Bao gồm cả VCLibs)
           Write-Host "Waiting for setup downloads..."
           $jobs | Wait-Job | Out-Null
           $jobs | Receive-Job
@@ -70,13 +79,25 @@ jobs:
           # Install Tailscale 
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
+          
+          # 5. Cài đặt VCLibs TỪ FILE ĐÃ TẢI XUỐNG
+          Write-Host "Installing VCLibs (Required Framework)..."
+          try {
+             Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
+             Write-Host "VCLibs Installed Successfully."
+             Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
+          } catch {
+             Write-Error "CRITICAL: VCLibs installation failed. WSA cannot be installed."
+             exit 1 # Dừng nếu thư viện nền tảng thất bại
+          }
 
-          # 4. Cài đặt WSA (Dùng Link Cứng MỚI)
+          # 6. Cài đặt WSA (Dùng Link Cứng đã Fix)
           Write-Host "Starting WSA installation using your provided URL..."
           $wsaDir = "C:\WSA"
           New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
           
-          # 4a. Cài UI.Xaml
+          # 6a. Cài UI.Xaml
+          # UI.Xaml đã được xử lý ở các lần trước, nhưng vẫn cần thiết
           try {
              $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
              Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
@@ -85,9 +106,8 @@ jobs:
              Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
           }
 
-          # 4b. Tải và Cài đặt WSA (LINK CỨNG MỚI BẠN CUNG CẤP)
+          # 6b. Tải và Cài đặt WSA 
           try {
-              # URL CUNG CẤP BỞI USER
               $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
               
               $wsaFile = "$wsaDir\wsa.7z"
@@ -102,8 +122,9 @@ jobs:
               
               if ($manifestPath) {
                   Write-Host "Installing WSA..."
+                  # Lệnh này sẽ thành công vì VCLibs đã được cài ở Bước 5
                   Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
-                  Write-Host "WSA Success!"
+                  Write-Host "WSA Success! (Finally!)"
               } else {
                   throw "Error: AppxManifest.xml not found after extraction."
               }
@@ -135,7 +156,7 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (FINAL LINK USED)"
+          Write-Host "RDP SESSION READY (VCLibs FIXED)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
