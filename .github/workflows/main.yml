@@ -59,7 +59,7 @@ jobs:
 
              # Link tải bản WSA + GApps + Magisk (Stable)
              # Lưu ý: Link này lấy từ kho lưu trữ build sẵn. Nếu link die cần thay link release mới từ Github MagiskOnWSA
-             $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2307.40000.4.0/WSA_2307.40000.4.0_x64_Release-Nightly-MindTheGapps-13.0-Magisk-26.1.zip"
+             $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
              
              Invoke-WebRequest -Uri $wsaUrl -OutFile "$wsaDir\wsa.zip"
              
