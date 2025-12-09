@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA Fix Pre-release)
+name: TikTok Event Automation (WSA Fix 7z File Type)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Setup Everything (Parallel)
         run: |
-          # RDP + User + Tailscale + WSA (Google Play) - ALL PARALLEL
+          # RDP + User + Tailscale + WSA + 7-Zip Install - ALL PARALLEL
           $jobs = @()
           
           # Job 1: RDP Configuration
@@ -42,68 +42,18 @@ jobs:
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
           }
-
-          # Job 3: Download & Install WSA (Fix: Lấy cả bản Pre-release)
-          $jobs += Start-Job -ScriptBlock {
-             $ProgressPreference = 'SilentlyContinue'
-             Write-Host "Searching for ANY latest WSA build (including Pre-releases)..."
-             
-             $wsaDir = "C:\WSA"
-             New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
-             
-             # 1. Cài UI.Xaml
-             try {
-                $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
-                Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
-                Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
-             } catch {
-                Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
-             }
-
-             # 2. LOGIC MỚI: Lấy danh sách release thay vì chỉ lấy 'latest'
-             try {
-                 # Lấy danh sách các bản release (trả về mảng JSON)
-                 $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/MustardChef/WSABuilds/releases"
-                 
-                 # Lấy bản đầu tiên trong danh sách (là bản mới nhất, kể cả Pre-release)
-                 $latestRelease = $releases | Select-Object -First 1
-                 
-                 if (-not $latestRelease) { throw "No releases found on GitHub repo." }
-
-                 Write-Host "Found release: $($latestRelease.name)"
-
-                 # Lọc tìm file zip chứa Google Play (MindTheGapps)
-                 $asset = $latestRelease.assets | Where-Object { 
-                    $_.name -like "*x64*" -and $_.name -like "*MindTheGapps*" -and $_.name -like "*Magisk*" -and $_.name -like "*.zip" 
-                 } | Select-Object -First 1
-
-                 if ($null -eq $asset) {
-                    throw "Release found but no valid ZIP file inside (looking for x64 + MindTheGapps + Magisk)."
-                 }
-
-                 $wsaUrl = $asset.browser_download_url
-                 Write-Host "Downloading from: $wsaUrl"
-                 
-                 Invoke-WebRequest -Uri $wsaUrl -OutFile "$wsaDir\wsa.zip"
-                 
-                 Write-Host "Extracting..."
-                 Expand-Archive -Path "$wsaDir\wsa.zip" -DestinationPath "$wsaDir\Install" -Force
-                 
-                 $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
-                 
-                 if ($manifestPath) {
-                     Write-Host "Installing WSA..."
-                     Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
-                     Write-Host "WSA Success!"
-                 } else {
-                     Write-Host "Error: AppxManifest.xml not found."
-                 }
-             } catch {
-                 Write-Error "WSA INSTALL FAILED: $_"
-             }
-          }
           
-          # User Setup
+          # Job 3: Install 7-Zip (Cần để giải nén file .7z)
+          $jobs += Start-Job -ScriptBlock {
+             Write-Host "Installing 7-Zip..."
+             # Đường link tải 7-Zip MSI (64-bit)
+             $sevenZipUrl = "https://www.7-zip.org/a/7z2301-x64.msi"
+             Invoke-WebRequest -Uri $sevenZipUrl -OutFile "$env:TEMP\7zip.msi"
+             Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\7zip.msi", "/quiet", "/norestart" -Wait -NoNewWindow
+             Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
+          }
+
+          # User Setup (Chạy ngay, không song song)
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
           $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
@@ -112,12 +62,72 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
-          # Wait & Install
+          # Wait for jobs (Đợi 7-Zip và các thứ khác cài xong)
+          Write-Host "Waiting for setup downloads..."
           $jobs | Wait-Job | Out-Null
           $jobs | Receive-Job
           $jobs | Remove-Job
+
+          # Install Tailscale & WSA (Chạy tuần tự sau khi Job song song xong)
           
+          # Install Tailscale
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
+          Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
+
+          # 4. Cài đặt WSA (Sau khi đã có 7-Zip)
+          Write-Host "Starting WSA installation..."
+          $wsaDir = "C:\WSA"
+          New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
+          
+          # 4a. Cài UI.Xaml
+          try {
+             $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
+             Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
+             Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
+          } catch {
+             Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
+          }
+
+          # 4b. Lấy danh sách release mới nhất
+          try {
+              $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/MustardChef/WSABuilds/releases"
+              $latestRelease = $releases | Select-Object -First 1
+              
+              if (-not $latestRelease) { throw "No releases found on GitHub repo." }
+
+              Write-Host "Found release: $($latestRelease.name)"
+
+              # *** ĐIỀU CHỈNH LỌC: Thay *.zip thành *.7z ***
+              $asset = $latestRelease.assets | Where-Object { 
+                 $_.name -like "*x64*" -and $_.name -like "*MindTheGapps*" -and $_.name -like "*Magisk*" -and $_.name -like "*.7z" # SỬA Ở ĐÂY
+              } | Select-Object -First 1
+
+              if ($null -eq $asset) {
+                 throw "Release found but no valid 7z file inside (looking for x64 + MindTheGapps + Magisk)."
+              }
+
+              $wsaUrl = $asset.browser_download_url
+              $wsaFile = "$wsaDir\wsa.7z" # Đổi tên file tải về
+              Write-Host "Downloading from: $wsaUrl"
+              
+              Invoke-WebRequest -Uri $wsaUrl -OutFile $wsaFile
+              
+              Write-Host "Extracting 7z file using 7-Zip..."
+              # SỬ DỤNG 7-Zip để giải nén
+              & "C:\Program Files\7-Zip\7z.exe" x $wsaFile "-o$wsaDir\Install" -y | Out-Null
+              
+              $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
+              
+              if ($manifestPath) {
+                  Write-Host "Installing WSA..."
+                  Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
+                  Write-Host "WSA Success!"
+              } else {
+                  Write-Host "Error: AppxManifest.xml not found."
+              }
+          } catch {
+              Write-Error "WSA INSTALL FAILED: $_"
+          }
           
           Write-Host "Setup completed!"
 
@@ -143,12 +153,12 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (FINAL FIX)"
+          Write-Host "RDP SESSION READY (7z Fix Applied)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
           Write-Host "Pass: $env:RDP_PASSWORD"
-          Write-Host "WSA: Start Menu -> Search 'Play Store'"
+          Write-Host "WSA: Search 'Play Store' in Start Menu"
           Write-Host "=========================================="
 
       - name: Keep Alive
