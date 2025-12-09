@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: 'Duration in minutes (max 15)'
+        description: 'Duration in minutes (max 30)'
         required: true
-        default: '20'
+        default: '30'
 
 jobs:
   run-automation:
     runs-on: windows-latest
-    timeout-minutes: 20  # Safety timeout
+    timeout-minutes: 20
 
     steps:
       - name: Validate Duration
@@ -23,91 +23,183 @@ jobs:
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
 
-      - name: Configure RDP (Minimal)
+      - name: Configure RDP & Create User (Parallel)
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                           -Name "UserAuthentication" -Value 0 -Force
+          # RDP Configuration
+          $rdpJob = Start-Job -ScriptBlock {
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+            netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
+            netsh advfirewall firewall add rule name="RDP-Temp" dir=in action=allow protocol=TCP localport=3389
+            Restart-Service -Name TermService -Force
+          }
           
-          netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Temp" `
-            dir=in action=allow protocol=TCP localport=3389
-          
-          Restart-Service -Name TermService -Force
-
-      - name: Create Temporary User
-        run: |
+          # Create user immediately
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
           $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          New-LocalUser -Name "TempUser" -Password $securePass -AccountNeverExpires
+          New-LocalUser -Name "TempUser" -Password $securePass -AccountNeverExpires | Out-Null
           Add-LocalGroupMember -Group "Administrators" -Member "TempUser"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
-          
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
           
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          # Wait for RDP config
+          $rdpJob | Wait-Job | Receive-Job
+          Write-Host "✓ RDP configured and user created"
 
-      - name: Connect Tailscale
+      - name: Download All Installers (Parallel)
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=tiktok-$env:GITHUB_RUN_ID
+          Write-Host "Downloading all installers in parallel..."
           
+          $downloads = @(
+              @{
+                  Name = "MEmu"
+                  Url = "https://dl.memuplay.com/MEmu_9.0.8.0_Offline_Installer.exe"
+                  Path = "$env:TEMP\MEmu.exe"
+              },
+              @{
+                  Name = "Tailscale"
+                  Url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+                  Path = "$env:TEMP\tailscale.msi"
+              }
+          )
+          
+          $jobs = @()
+          foreach ($dl in $downloads) {
+              $jobs += Start-Job -ScriptBlock {
+                  param($url, $path, $name)
+                  $ProgressPreference = 'SilentlyContinue'
+                  Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing
+                  Write-Output "✓ $name downloaded"
+              } -ArgumentList $dl.Url, $dl.Path, $dl.Name
+          }
+          
+          # Wait for all downloads
+          $jobs | Wait-Job | Receive-Job
+          $jobs | Remove-Job
+          Write-Host "✓ All downloads completed"
+
+      - name: Install MEmu & Tailscale (Parallel)
+        run: |
+          Write-Host "Installing MEmu and Tailscale simultaneously..."
+          
+          # Start MEmu installation (async)
+          $memuProcess = Start-Process -FilePath "$env:TEMP\MEmu.exe" -ArgumentList "/S" -PassThru -NoNewWindow
+          
+          # Install Tailscale while MEmu is installing
+          Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
+          Write-Host "✓ Tailscale installed"
+          
+          # Wait for MEmu to finish
+          $memuProcess | Wait-Process
+          Write-Host "✓ MEmu installed"
+          
+          # Cleanup installers immediately
+          Remove-Item "$env:TEMP\MEmu.exe", "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
+
+      - name: Configure MEmu & Connect Tailscale (Parallel)
+        run: |
+          # Configure MEmu in background
+          $memuJob = Start-Job -ScriptBlock {
+            Start-Sleep -Seconds 5
+            $memuPath = "C:\Program Files\Microvirt\MEmu"
+            if (Test-Path $memuPath) {
+                $desktop = "C:\Users\runneradmin\Desktop"
+                $WScriptShell = New-Object -ComObject WScript.Shell
+                $Shortcut = $WScriptShell.CreateShortcut("$desktop\MEmu.lnk")
+                $Shortcut.TargetPath = "$memuPath\MEmu.exe"
+                $Shortcut.Save()
+                Write-Output "✓ MEmu shortcut created"
+            }
+          }
+          
+          # Connect Tailscale immediately
+          Write-Host "Connecting to Tailscale..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=tiktok-$env:GITHUB_RUN_ID --accept-routes
+          
+          # Get IP with retry
           $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 3
-              $retries++
+          for ($i = 0; $i -lt 10; $i++) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
+              if ($tsIP) { break }
+              Start-Sleep -Seconds 2
           }
           
           if (-not $tsIP) {
               Write-Error "Failed to get Tailscale IP"
               exit 1
           }
+          
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "✓ Tailscale connected: $tsIP"
+          
+          # Wait for MEmu config
+          $memuJob | Wait-Job | Receive-Job | Write-Host
+          $memuJob | Remove-Job
 
-      - name: Display Connection Info
+      - name: System Info & Connection Details
         run: |
           Write-Host "`n========================================="
-          Write-Host "TikTok Event Automation - RDP Access"
+          Write-Host "🎮 TikTok Event Automation - READY"
           Write-Host "========================================="
-          Write-Host "IP Address: $env:TAILSCALE_IP"
-          Write-Host "Username: TempUser"
-          Write-Host "Password: $env:RDP_PASSWORD"
-          Write-Host "Duration: $env:DURATION minutes"
+          Write-Host "📡 Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "👤 Username: TempUser"
+          Write-Host "🔑 Password: $env:RDP_PASSWORD"
+          Write-Host "⏱️  Duration: $env:DURATION minutes"
+          Write-Host ""
+          Write-Host "📦 Installed Software:"
+          Write-Host "   ✓ MEmu Emulator (Desktop)"
+          Write-Host "   ✓ Tailscale VPN"
+          Write-Host ""
+          Write-Host "💻 System Resources:"
+          $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
+          $ram = Get-CimInstance -ClassName Win32_ComputerSystem
+          Write-Host "   CPU: $($cpu.Name)"
+          Write-Host "   RAM: $([math]::Round($ram.TotalPhysicalMemory/1GB, 2)) GB"
+          Write-Host "   Cores: $($cpu.NumberOfCores) cores / $($cpu.NumberOfLogicalProcessors) threads"
           Write-Host "=========================================`n"
 
-      - name: Run Timed Session
+      - name: Keep Session Alive
         run: |
           $endTime = (Get-Date).AddMinutes($env:DURATION)
+          $lastCheck = Get-Date
           
-          Write-Host "Session started at $(Get-Date -Format 'HH:mm:ss')"
-          Write-Host "Session will end at $($endTime.ToString('HH:mm:ss'))"
+          Write-Host "🚀 Session started at $(Get-Date -Format 'HH:mm:ss')"
+          Write-Host "⏰ Session will end at $($endTime.ToString('HH:mm:ss'))`n"
           
           while ((Get-Date) -lt $endTime) {
-              $remaining = ($endTime - (Get-Date)).TotalMinutes
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active - $([math]::Round($remaining, 1)) minutes remaining"
-              Start-Sleep -Seconds 30
+              $now = Get-Date
+              $remaining = ($endTime - $now).TotalMinutes
+              
+              # Show status every 30 seconds
+              if (($now - $lastCheck).TotalSeconds -ge 30) {
+                  $mins = [math]::Floor($remaining)
+                  $secs = [math]::Round(($remaining - $mins) * 60)
+                  Write-Host "[$($now.ToString('HH:mm:ss'))] ⚡ Active - $mins min $secs sec remaining"
+                  $lastCheck = $now
+                  
+                  # Health check
+                  $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json 2>$null | ConvertFrom-Json
+                  if (-not $tsStatus) {
+                      Write-Warning "⚠️  Tailscale connection lost, reconnecting..."
+                      & "$env:ProgramFiles\Tailscale\tailscale.exe" up
+                  }
+              }
+              
+              Start-Sleep -Seconds 5
           }
           
-          Write-Host "`nSession time expired. Cleaning up..."
+          Write-Host "`n⏱️  Session time expired. Cleaning up..."
 
       - name: Cleanup
         if: always()
         run: |
+          Write-Host "🧹 Cleaning up..."
+          
           # Disconnect Tailscale
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
           
           # Remove temporary user
           Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
           
-          Write-Host "Cleanup completed"
+          Write-Host "✅ Cleanup completed"
