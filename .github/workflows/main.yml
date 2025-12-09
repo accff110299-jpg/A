@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA + PlayStore)
+name: TikTok Event Automation (WSA + PlayStore Auto-Fix)
 
 on:
   workflow_dispatch:
@@ -43,43 +43,64 @@ jobs:
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
           }
 
-          # Job 3: Download & Install WSA (MagiskOnWSA - with Google Play)
+          # Job 3: Download & Install WSA (Tự động lấy link mới nhất)
           $jobs += Start-Job -ScriptBlock {
              $ProgressPreference = 'SilentlyContinue'
-             Write-Host "Downloading WSA with Google Play..."
+             Write-Host "Searching for latest WSA with Google Play..."
              
-             # Tạo thư mục làm việc
+             # Tạo thư mục
              $wsaDir = "C:\WSA"
              New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
              
-             # Cài đặt Dependencies cần thiết cho WSA (UI.Xaml)
-             $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
-             Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
-             Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
+             # 1. Cài đặt UI.Xaml (Thư viện giao diện bắt buộc)
+             try {
+                $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
+                Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
+                Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
+             } catch {
+                Write-Host "Warning: UI.Xaml download failed, proceeding anyway..."
+             }
 
-             # Link tải bản WSA + GApps + Magisk (Stable)
-             # Lưu ý: Link này lấy từ kho lưu trữ build sẵn. Nếu link die cần thay link release mới từ Github MagiskOnWSA
-             $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
-             
-             Invoke-WebRequest -Uri $wsaUrl -OutFile "$wsaDir\wsa.zip"
-             
-             Write-Host "Extracting WSA..."
-             Expand-Archive -Path "$wsaDir\wsa.zip" -DestinationPath "$wsaDir\Install" -Force
-             
-             # Tìm file AppxManifest.xml trong thư mục vừa giải nén (thường nó nằm trong thư mục con)
-             $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
-             
-             if ($manifestPath) {
-                 Write-Host "Registering WSA..."
-                 # Đăng ký ứng dụng vào Windows
-                 Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
-                 Write-Host "WSA Installed successfully."
-             } else {
-                 Write-Host "Failed to find AppxManifest.xml"
+             # 2. TỰ ĐỘNG TÌM LINK TẢI WSA MỚI NHẤT (Khắc phục lỗi 404)
+             try {
+                 # Gọi API Github để lấy bản release mới nhất
+                 $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/MustardChef/WSABuilds/releases/latest"
+                 
+                 # Lọc tìm file có chứa chữ 'x64', 'MindTheGapps' (Google Play) và 'Magisk' (Root)
+                 $asset = $latestRelease.assets | Where-Object { 
+                    $_.name -like "*x64*" -and $_.name -like "*MindTheGapps*" -and $_.name -like "*Magisk*" -and $_.name -like "*.zip" 
+                 } | Select-Object -First 1
+
+                 if ($null -eq $asset) {
+                    throw "Could not find a valid WSA asset in the latest release."
+                 }
+
+                 $wsaUrl = $asset.browser_download_url
+                 Write-Host "Found URL: $wsaUrl"
+                 Write-Host "Downloading WSA..."
+                 
+                 Invoke-WebRequest -Uri $wsaUrl -OutFile "$wsaDir\wsa.zip"
+                 
+                 Write-Host "Extracting WSA..."
+                 Expand-Archive -Path "$wsaDir\wsa.zip" -DestinationPath "$wsaDir\Install" -Force
+                 
+                 # Tìm file AppxManifest để cài đặt
+                 $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
+                 
+                 if ($manifestPath) {
+                     Write-Host "Registering WSA..."
+                     Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
+                     Write-Host "WSA Installed successfully."
+                 } else {
+                     Write-Host "Failed to find AppxManifest.xml in the extracted folder."
+                 }
+             } catch {
+                 Write-Error "FAILED to install WSA: $_"
+                 # Không exit ở đây để RDP vẫn chạy được dù WSA lỗi
              }
           }
           
-          # Create user immediately (not in background)
+          # User Setup
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
           $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
@@ -88,15 +109,14 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
-          # Wait for background jobs
-          Write-Host "Waiting for downloads and installations..."
+          # Wait for jobs
+          Write-Host "Waiting for downloads..."
           $jobs | Wait-Job | Out-Null
           $jobs | Receive-Job
           $jobs | Remove-Job
           
-          # Install Tailscale immediately
+          # Install Tailscale
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
-          Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           
           Write-Host "Setup completed!"
 
@@ -122,29 +142,19 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (WSA INSTALLED)"
+          Write-Host "RDP SESSION READY (AUTO-WSA)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
           Write-Host "Pass: $env:RDP_PASSWORD"
           Write-Host "Time: $env:DURATION minutes"
-          Write-Host "NOTE: Search for 'Play Store' in Start Menu"
+          Write-Host "WSA Status: Check logs above if Play Store is missing"
           Write-Host "=========================================="
 
       - name: Keep Alive
         run: |
           $endTime = (Get-Date).AddMinutes($env:DURATION)
-          $nextLog = Get-Date
-          
           while ((Get-Date) -lt $endTime) {
-              $now = Get-Date
-              
-              if ($now -ge $nextLog) {
-                  $remaining = [math]::Ceiling(($endTime - $now).TotalMinutes)
-                  Write-Host "[$($now.ToString('HH:mm:ss'))] Active - $remaining min left"
-                  $nextLog = $now.AddSeconds(60)
-              }
-              
               Start-Sleep -Seconds 10
           }
 
@@ -153,4 +163,3 @@ jobs:
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
           Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
-          Write-Host "Cleanup done"
