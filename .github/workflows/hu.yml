@@ -42,23 +42,15 @@ jobs:
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
     
-    # Cache tất cả mọi thứ để lần sau nhanh hơn
-    - name: Cache Android SDK
-      uses: actions/cache@v4
-      with:
-        path: |
-          ${{ github.workspace }}/android-sdk
-        key: android-sdk-${{ inputs.android_version }}-v2
-    
     - name: Cache AVD
       if: inputs.setup_mode == 'quick'
       uses: actions/cache@v4
       id: avd-cache
       with:
         path: |
-          ~/.android/avd/*
+          ~/.android/avd
           ~/.android/adb*
-        key: avd-${{ inputs.android_version }}-tiktok-v3
+        key: avd-${{ inputs.android_version }}-tiktok-v4
     
     - name: Cache TikTok APK
       uses: actions/cache@v4
@@ -86,28 +78,46 @@ jobs:
     - name: Create AVD (if not cached)
       if: steps.avd-cache.outputs.cache-hit != 'true' || inputs.setup_mode == 'fresh'
       run: |
+        echo "🔧 Tạo AVD mới..."
         echo "no" | avdmanager create avd -n test_avd -k "system-images;android-${{ inputs.android_version }};google_apis;x86_64" -d "pixel_5" -f
+        
+        # Verify AVD was created
+        if [ ! -f ~/.android/avd/test_avd.ini ]; then
+          echo "❌ Failed to create AVD!"
+          exit 1
+        fi
+        
+        echo "✅ AVD created successfully"
+        ls -la ~/.android/avd/
     
     - name: Download TikTok APK (if not cached)
       if: steps.apk-cache.outputs.cache-hit != 'true'
       run: |
         echo "📦 Tải TikTok APK v42.9.3..."
+        # Dùng APKPure mirror hoặc APKMirror
         wget --user-agent="Mozilla/5.0" --timeout=60 --tries=3 \
           -O tiktok.apk \
-          "https://d-e03.winudf.com/b/APK/Y29tLnpoaWxpYW9hcHAubXVzaWNhbGx5XzIwMjQyMDkwMzBfODQ0NzcxZWE?_fn=VGlrVG9rIC0gVmlkZW9zLCBTaG9wICYgTElWRV80Mi45LjNfQVBLUHVyZS5hcGs&_p=Y29tLnpoaWxpYW9hcHAubXVzaWNhbGx5&download_id=otr_1124602165356072&is_hot=true&k=2b9c1038472fff6a9c32ba31e2fd9dff693903ea&uu=https%3A%2F%2Fd-02.winudf.com%2Fb%2FAPK%2FY29tLnpoaWxpYW9hcHAubXVzaWNhbGx5XzIwMjQyMDkwMzBfODQ0NzcxZWE%3Fk%3Dff5f89f9fd76c90ded027d32c405dc3e693903ea"
-        echo "✅ Đã tải TikTok APK ($(du -h tiktok.apk | cut -f1))"
+          "https://apkpure.com/tiktok/com.zhiliaoapp.musically/download" || \
+        wget --user-agent="Mozilla/5.0" --timeout=60 --tries=3 \
+          -O tiktok.apk \
+          "https://d.apkpure.com/b/APK/com.zhiliaoapp.musically" || \
+        echo "⚠️  Không tải được APK, sẽ bỏ qua bước cài đặt"
+        
+        if [ -f tiktok.apk ]; then
+          echo "✅ Đã tải TikTok APK ($(du -h tiktok.apk | cut -f1))"
+        fi
     
     - name: Setup VNC
       run: |
         export DISPLAY=:99
         Xvfb :99 -screen 0 1280x720x24 > /dev/null 2>&1 &
-        sleep 1
+        sleep 2
         fluxbox > /dev/null 2>&1 &
         sleep 1
         mkdir -p ~/.vnc
         x11vnc -storepasswd github ~/.vnc/passwd
         x11vnc -display :99 -rfbauth ~/.vnc/passwd -rfbport 5900 -shared -forever > /dev/null 2>&1 &
-        sleep 1
+        sleep 2
     
     - name: Setup noVNC
       run: |
@@ -123,44 +133,82 @@ jobs:
         sudo dpkg -i cloudflared-linux-amd64.deb
         cloudflared tunnel --url http://localhost:6080 > /tmp/tunnel.log 2>&1 &
         
-        # Đợi tunnel ready
-        for i in {1..20}; do
+        # Đợi tunnel ready với timeout
+        echo "⏳ Đợi Cloudflare tunnel..."
+        for i in {1..30}; do
           if grep -q "https://" /tmp/tunnel.log; then
             break
           fi
           sleep 1
         done
         
-        TUNNEL_URL=$(cat /tmp/tunnel.log | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | head -1)
+        TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+        
+        if [ -z "$TUNNEL_URL" ]; then
+          echo "❌ Không tạo được tunnel URL"
+          cat /tmp/tunnel.log
+          exit 1
+        fi
+        
         echo "$TUNNEL_URL" > /tmp/tunnel_url.txt
         
         echo "=================================="
-        echo "🚀 READY IN ~30 SECONDS!"
+        echo "🚀 TUNNEL READY!"
         echo "=================================="
         echo "🌐 URL: $TUNNEL_URL"
         echo "🔑 Password: github"
         echo "=================================="
     
-    - name: Start Emulator (FAST!)
+    - name: Start Emulator
       run: |
         export DISPLAY=:99
         export ANDROID_AVD_HOME=$HOME/.android/avd
         
+        # Kiểm tra AVD có tồn tại không
+        if [ ! -f ~/.android/avd/test_avd.ini ]; then
+          echo "❌ AVD không tồn tại! Đang tạo mới..."
+          echo "no" | avdmanager create avd -n test_avd \
+            -k "system-images;android-${{ inputs.android_version }};google_apis;x86_64" \
+            -d "pixel_5" -f
+        fi
+        
+        echo "📋 Available AVDs:"
+        $ANDROID_SDK_ROOT/emulator/emulator -list-avds
+        
         echo "⚡ Khởi động emulator..."
         
         # Sử dụng snapshot nếu có (SIÊU NHANH)
-        if [ "${{ steps.avd-cache.outputs.cache-hit }}" == "true" ] && [ "${{ inputs.setup_mode }}" == "quick" ]; then
+        if [ "${{ steps.avd-cache.outputs.cache-hit }}" = "true" ] && [ "${{ inputs.setup_mode }}" = "quick" ]; then
           echo "📸 Dùng snapshot có sẵn - SIÊU NHANH!"
-          $ANDROID_SDK_ROOT/emulator/emulator -avd test_avd -no-audio -gpu swiftshader_indirect -memory 4096 &
+          $ANDROID_SDK_ROOT/emulator/emulator -avd test_avd \
+            -no-audio -gpu swiftshader_indirect -memory 4096 \
+            -no-boot-anim &
         else
-          echo "🆕 Boot lần đầu (sẽ chậm hơn)"
-          $ANDROID_SDK_ROOT/emulator/emulator -avd test_avd -no-snapshot-save -no-audio -gpu swiftshader_indirect -memory 4096 &
+          echo "🆕 Boot lần đầu (sẽ tạo snapshot)"
+          $ANDROID_SDK_ROOT/emulator/emulator -avd test_avd \
+            -no-audio -gpu swiftshader_indirect -memory 4096 \
+            -no-boot-anim &
         fi
         
-        $ANDROID_SDK_ROOT/platform-tools/adb wait-for-device
+        # Đợi device với timeout
+        echo "⏳ Đợi emulator khởi động..."
+        timeout 300 $ANDROID_SDK_ROOT/platform-tools/adb wait-for-device || {
+          echo "❌ Timeout đợi device"
+          exit 1
+        }
         
-        while [ "$($ANDROID_SDK_ROOT/platform-tools/adb shell getprop sys.boot_completed | tr -d '\r')" != "1" ]; do
+        # Đợi boot completed với timeout
+        COUNTER=0
+        while [ "$($ANDROID_SDK_ROOT/platform-tools/adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; do
           sleep 2
+          COUNTER=$((COUNTER + 1))
+          if [ $COUNTER -gt 150 ]; then
+            echo "❌ Timeout đợi boot completed"
+            exit 1
+          fi
+          if [ $((COUNTER % 15)) -eq 0 ]; then
+            echo "⏳ Vẫn đang boot... (${COUNTER}s)"
+          fi
         done
         
         echo "✅ Emulator ready!"
@@ -175,18 +223,26 @@ jobs:
         # Check nếu TikTok đã được cài (từ snapshot)
         if $ANDROID_SDK_ROOT/platform-tools/adb shell pm list packages | grep -q "com.zhiliaoapp.musically"; then
           echo "✅ TikTok đã có sẵn từ snapshot!"
-        else
+        elif [ -f tiktok.apk ]; then
           echo "📲 Cài TikTok..."
           $ANDROID_SDK_ROOT/platform-tools/adb install -r tiktok.apk
           
           # Grant permissions
-          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.CAMERA || true
-          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.RECORD_AUDIO || true
-          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.READ_EXTERNAL_STORAGE || true
-          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.WRITE_EXTERNAL_STORAGE || true
-          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.ACCESS_FINE_LOCATION || true
+          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.CAMERA 2>/dev/null || true
+          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.RECORD_AUDIO 2>/dev/null || true
+          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.READ_EXTERNAL_STORAGE 2>/dev/null || true
+          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.WRITE_EXTERNAL_STORAGE 2>/dev/null || true
+          $ANDROID_SDK_ROOT/platform-tools/adb shell pm grant com.zhiliaoapp.musically android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
           
           echo "✅ TikTok installed!"
+        else
+          echo "⚠️  Không có TikTok APK để cài"
+        fi
+        
+        # Chụp snapshot nếu là lần đầu
+        if [ "${{ steps.avd-cache.outputs.cache-hit }}" != "true" ]; then
+          echo "📸 Đang tạo snapshot..."
+          sleep 5
         fi
     
     - name: Display Info
@@ -202,7 +258,13 @@ jobs:
         echo "🔑 Password: github"
         echo "⏰ Duration: ${{ inputs.duration }} phút"
         echo "📱 Android API: ${{ inputs.android_version }}"
-        echo "📲 TikTok: ✅ Installed"
+        
+        if $ANDROID_SDK_ROOT/platform-tools/adb shell pm list packages | grep -q "com.zhiliaoapp.musically"; then
+          echo "📲 TikTok: ✅ Installed"
+        else
+          echo "📲 TikTok: ⚠️  Not installed"
+        fi
+        
         echo ""
         echo "💡 Tips:"
         echo "  • Lần đầu sẽ chậm (~5 phút)"
@@ -213,7 +275,7 @@ jobs:
     
     - name: Keep Alive
       run: |
-        DURATION=$(($${{ inputs.duration }} * 60))
+        DURATION=$((${{ inputs.duration }} * 60))
         END=$(($(date +%s) + DURATION))
         
         echo "⏰ Emulator sẽ chạy trong ${{ inputs.duration }} phút"
