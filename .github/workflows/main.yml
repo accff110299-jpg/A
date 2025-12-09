@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA FINAL VERSION - VCLibs Script Fix)
+name: TikTok Event Automation (WSA FINAL VERSION - CÚ PHÁP SẠCH)
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           # DOWLOADS VÀ CÀI ĐẶT SONG SONG (Parallel Jobs)
           $jobs = @()
           
-          # Job 1: RDP Configuration
+          # 1. RDP Configuration
           $jobs += Start-Job -ScriptBlock {
             Write-Host "Configuring RDP..."
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -49,14 +49,14 @@ jobs:
             Restart-Service -Name TermService -Force
           }
           
-          # Job 2: Download Tailscale
+          # 2. Download Tailscale
           $jobs += Start-Job -ScriptBlock {
             Write-Host "Downloading Tailscale..."
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
           }
           
-          # Job 3: Install 7-Zip
+          # 3. Install 7-Zip
           $jobs += Start-Job -ScriptBlock {
              Write-Host "Installing 7-Zip..."
              $sevenZipUrl = "https://www.7-zip.org/a/7z2301-x64.msi"
@@ -65,7 +65,7 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # Job 4: Download VCLibs Deployment Script (Dùng script bạn cung cấp)
+          # 4. Download VCLibs Deployment Script (Link bạn cung cấp)
           $jobs += Start-Job -ScriptBlock {
               Write-Host "Downloading VCLibs Deployment Script..."
               $vclibsScriptUrl = "https://raw.githubusercontent.com/gabriel-vanca/VCLibs/main/Deploy_MS_VCLibs.ps1"
@@ -82,7 +82,7 @@ jobs:
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           Write-Host "Prerequisite setup completed!"
 
-      - name: Deploy VCLibs Dependencies (Sử dụng Script từ Github)
+      - name: Deploy VCLibs Dependencies
         run: |
           Write-Host "Running VCLibs Deployment Script..."
           # Chạy script PowerShell đã tải về
@@ -156,7 +156,7 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (ALL FIXES APPLIED)"
+          Write-Host "RDP SESSION READY (FINAL FIX APPLIED)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
