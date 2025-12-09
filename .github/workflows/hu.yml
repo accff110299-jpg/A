@@ -1,0 +1,223 @@
+name: Remote Android Emulator
+
+on:
+  workflow_dispatch:  # Chỉ chạy manual để tránh lãng phí resources
+    inputs:
+      duration:
+        description: 'Thời gian chạy (phút)'
+        required: true
+        default: '30'
+        type: string
+      android_version:
+        description: 'Android API Level'
+        required: true
+        default: '30'
+        type: choice
+        options:
+          - '29'
+          - '30'
+          - '31'
+          - '33'
+
+jobs:
+  remote-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # Max timeout để tránh chạy mãi
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Enable KVM
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        ls -al /dev/kvm
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          xvfb \
+          x11vnc \
+          fluxbox \
+          wmctrl \
+          libpulse0 \
+          xdotool
+    
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+    
+    - name: Accept Android licenses
+      run: yes | sdkmanager --licenses || true
+    
+    - name: Install Android system image
+      run: |
+        sdkmanager "system-images;android-${{ inputs.android_version }};google_apis;x86_64"
+        sdkmanager "platform-tools"
+        sdkmanager "emulator"
+    
+    - name: Create AVD
+      run: |
+        echo "no" | avdmanager create avd \
+          -n test_avd \
+          -k "system-images;android-${{ inputs.android_version }};google_apis;x86_64" \
+          -d "pixel_5" \
+          -f
+    
+    - name: Setup VNC Server
+      run: |
+        # Tạo display ảo
+        export DISPLAY=:99
+        Xvfb :99 -screen 0 1280x720x24 &
+        sleep 2
+        
+        # Khởi động window manager
+        fluxbox &
+        sleep 2
+        
+        # Setup VNC password
+        mkdir -p ~/.vnc
+        x11vnc -storepasswd github ~/.vnc/passwd
+    
+    - name: Install noVNC
+      run: |
+        git clone https://github.com/novnc/noVNC.git /tmp/novnc
+        git clone https://github.com/novnc/websockify /tmp/novnc/utils/websockify
+    
+    - name: Start VNC Server
+      run: |
+        export DISPLAY=:99
+        x11vnc -display :99 -rfbauth ~/.vnc/passwd -rfbport 5900 -shared -forever &
+        sleep 2
+    
+    - name: Start noVNC
+      run: |
+        cd /tmp/novnc
+        ./utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
+        sleep 3
+    
+    - name: Setup Cloudflare Tunnel (để access từ ngoài)
+      run: |
+        # Download cloudflared
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared-linux-amd64.deb
+        
+        # Start tunnel
+        cloudflared tunnel --url http://localhost:6080 > /tmp/tunnel.log 2>&1 &
+        sleep 10
+        
+        # Lấy URL
+        cat /tmp/tunnel.log | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | head -1 > /tmp/tunnel_url.txt
+        TUNNEL_URL=$(cat /tmp/tunnel_url.txt)
+        
+        echo "=================================="
+        echo "🌐 VNC URL: $TUNNEL_URL"
+        echo "🔑 Password: github"
+        echo "⏰ Thời gian: ${{ inputs.duration }} phút"
+        echo "=================================="
+        echo ""
+        echo "📱 Hướng dẫn:"
+        echo "1. Mở URL trên trong browser"
+        echo "2. Nhập password: github"
+        echo "3. Click Connect"
+        echo "4. Chờ emulator khởi động"
+        echo "=================================="
+    
+    - name: Start Android Emulator
+      run: |
+        export DISPLAY=:99
+        export ANDROID_AVD_HOME=$HOME/.android/avd
+        
+        echo "Đang khởi động Android Emulator..."
+        $ANDROID_SDK_ROOT/emulator/emulator \
+          -avd test_avd \
+          -no-snapshot-save \
+          -no-audio \
+          -gpu swiftshader_indirect \
+          -camera-back emulated \
+          -camera-front emulated \
+          -memory 4096 \
+          -cores 2 &
+        
+        # Chờ emulator boot xong
+        echo "Đợi emulator khởi động..."
+        $ANDROID_SDK_ROOT/platform-tools/adb wait-for-device
+        
+        # Chờ boot animation xong
+        while [ "$($ANDROID_SDK_ROOT/platform-tools/adb shell getprop sys.boot_completed | tr -d '\r')" != "1" ]; do
+          echo "Đang boot..."
+          sleep 5
+        done
+        
+        echo "✅ Emulator đã sẵn sàng!"
+        $ANDROID_SDK_ROOT/platform-tools/adb devices
+    
+    - name: Setup Emulator Settings
+      run: |
+        # Tắt screen lock
+        $ANDROID_SDK_ROOT/platform-tools/adb shell settings put secure lockscreen.disabled 1
+        
+        # Tăng screen timeout
+        $ANDROID_SDK_ROOT/platform-tools/adb shell settings put system screen_off_timeout 1800000
+        
+        # Stay awake khi charging
+        $ANDROID_SDK_ROOT/platform-tools/adb shell settings put global stay_on_while_plugged_in 3
+        
+        echo "✅ Cài đặt emulator hoàn tất"
+    
+    - name: Display Connection Info
+      run: |
+        echo "=================================="
+        echo "📱 ANDROID EMULATOR IS READY!"
+        echo "=================================="
+        echo ""
+        cat /tmp/tunnel_url.txt
+        echo ""
+        echo "Password: github"
+        echo ""
+        echo "Android Version: API ${{ inputs.android_version }}"
+        echo "Duration: ${{ inputs.duration }} minutes"
+        echo ""
+        echo "=================================="
+        echo "💡 Tips:"
+        echo "- Có thể cài APK qua adb"
+        echo "- Có thể dùng Google Play Store"
+        echo "- Control emulator qua mouse/keyboard"
+        echo "=================================="
+    
+    - name: Keep Alive
+      run: |
+        DURATION_SECONDS=$(($${{ inputs.duration }} * 60))
+        echo "⏰ Giữ emulator chạy trong ${{ inputs.duration }} phút..."
+        
+        END_TIME=$(($(date +%s) + DURATION_SECONDS))
+        
+        while [ $(date +%s) -lt $END_TIME ]; do
+          REMAINING=$((END_TIME - $(date +%s)))
+          MINUTES=$((REMAINING / 60))
+          SECONDS=$((REMAINING % 60))
+          
+          echo "⏱️  Còn lại: ${MINUTES}m ${SECONDS}s"
+          
+          # Check emulator còn sống không
+          if ! $ANDROID_SDK_ROOT/platform-tools/adb devices | grep -q "emulator"; then
+            echo "❌ Emulator đã tắt!"
+            break
+          fi
+          
+          sleep 30
+        done
+        
+        echo "⏰ Hết thời gian!"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "🧹 Dọn dẹp..."
+        pkill -f emulator || true
+        pkill -f x11vnc || true
+        pkill -f cloudflared || true
+        pkill -f Xvfb || true
+        echo "✅ Đã dọn dẹp xong"
