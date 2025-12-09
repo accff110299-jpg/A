@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA + PlayStore Auto-Fix)
+name: TikTok Event Automation (WSA Fix Pre-release)
 
 on:
   workflow_dispatch:
@@ -43,60 +43,63 @@ jobs:
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
           }
 
-          # Job 3: Download & Install WSA (Tự động lấy link mới nhất)
+          # Job 3: Download & Install WSA (Fix: Lấy cả bản Pre-release)
           $jobs += Start-Job -ScriptBlock {
              $ProgressPreference = 'SilentlyContinue'
-             Write-Host "Searching for latest WSA with Google Play..."
+             Write-Host "Searching for ANY latest WSA build (including Pre-releases)..."
              
-             # Tạo thư mục
              $wsaDir = "C:\WSA"
              New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
              
-             # 1. Cài đặt UI.Xaml (Thư viện giao diện bắt buộc)
+             # 1. Cài UI.Xaml
              try {
                 $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
                 Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
                 Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
              } catch {
-                Write-Host "Warning: UI.Xaml download failed, proceeding anyway..."
+                Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
              }
 
-             # 2. TỰ ĐỘNG TÌM LINK TẢI WSA MỚI NHẤT (Khắc phục lỗi 404)
+             # 2. LOGIC MỚI: Lấy danh sách release thay vì chỉ lấy 'latest'
              try {
-                 # Gọi API Github để lấy bản release mới nhất
-                 $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/MustardChef/WSABuilds/releases/latest"
+                 # Lấy danh sách các bản release (trả về mảng JSON)
+                 $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/MustardChef/WSABuilds/releases"
                  
-                 # Lọc tìm file có chứa chữ 'x64', 'MindTheGapps' (Google Play) và 'Magisk' (Root)
+                 # Lấy bản đầu tiên trong danh sách (là bản mới nhất, kể cả Pre-release)
+                 $latestRelease = $releases | Select-Object -First 1
+                 
+                 if (-not $latestRelease) { throw "No releases found on GitHub repo." }
+
+                 Write-Host "Found release: $($latestRelease.name)"
+
+                 # Lọc tìm file zip chứa Google Play (MindTheGapps)
                  $asset = $latestRelease.assets | Where-Object { 
                     $_.name -like "*x64*" -and $_.name -like "*MindTheGapps*" -and $_.name -like "*Magisk*" -and $_.name -like "*.zip" 
                  } | Select-Object -First 1
 
                  if ($null -eq $asset) {
-                    throw "Could not find a valid WSA asset in the latest release."
+                    throw "Release found but no valid ZIP file inside (looking for x64 + MindTheGapps + Magisk)."
                  }
 
                  $wsaUrl = $asset.browser_download_url
-                 Write-Host "Found URL: $wsaUrl"
-                 Write-Host "Downloading WSA..."
+                 Write-Host "Downloading from: $wsaUrl"
                  
                  Invoke-WebRequest -Uri $wsaUrl -OutFile "$wsaDir\wsa.zip"
                  
-                 Write-Host "Extracting WSA..."
+                 Write-Host "Extracting..."
                  Expand-Archive -Path "$wsaDir\wsa.zip" -DestinationPath "$wsaDir\Install" -Force
                  
-                 # Tìm file AppxManifest để cài đặt
                  $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
                  
                  if ($manifestPath) {
-                     Write-Host "Registering WSA..."
+                     Write-Host "Installing WSA..."
                      Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
-                     Write-Host "WSA Installed successfully."
+                     Write-Host "WSA Success!"
                  } else {
-                     Write-Host "Failed to find AppxManifest.xml in the extracted folder."
+                     Write-Host "Error: AppxManifest.xml not found."
                  }
              } catch {
-                 Write-Error "FAILED to install WSA: $_"
-                 # Không exit ở đây để RDP vẫn chạy được dù WSA lỗi
+                 Write-Error "WSA INSTALL FAILED: $_"
              }
           }
           
@@ -109,13 +112,11 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
-          # Wait for jobs
-          Write-Host "Waiting for downloads..."
+          # Wait & Install
           $jobs | Wait-Job | Out-Null
           $jobs | Receive-Job
           $jobs | Remove-Job
           
-          # Install Tailscale
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           
           Write-Host "Setup completed!"
@@ -142,13 +143,12 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (AUTO-WSA)"
+          Write-Host "RDP SESSION READY (FINAL FIX)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
           Write-Host "Pass: $env:RDP_PASSWORD"
-          Write-Host "Time: $env:DURATION minutes"
-          Write-Host "WSA Status: Check logs above if Play Store is missing"
+          Write-Host "WSA: Start Menu -> Search 'Play Store'"
           Write-Host "=========================================="
 
       - name: Keep Alive
