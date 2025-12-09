@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA Final Fix: VCLibs Dependency)
+name: TikTok Event Automation (WSA FINAL VERSION)
 
 on:
   workflow_dispatch:
@@ -14,8 +14,9 @@ jobs:
     timeout-minutes: 35
 
     steps:
-      - name: Validate Duration
+      - name: Validate Duration and Setup User
         run: |
+          # Validation
           $duration = [int]"${{ github.event.inputs.duration }}"
           if ($duration -gt 30) {
             Write-Error "Duration cannot exceed 30 minutes"
@@ -23,10 +24,22 @@ jobs:
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
 
-      - name: Setup Prerequisites (Parallel)
+          # User Setup
+          $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
+          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "TempUser" -Password $securePass -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group "Administrators" -Member "TempUser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          Write-Host "User setup completed."
+          
+      - name: Setup Prerequisites (Parallel Download/Install)
         run: |
-          # Job 1: RDP Configuration
+          # DOWLOADS VÀ CÀI ĐẶT SONG SONG (Parallel Jobs)
           $jobs = @()
+          
+          # Job 1: RDP Configuration
           $jobs += Start-Job -ScriptBlock {
             Write-Host "Configuring RDP..."
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -59,37 +72,25 @@ jobs:
               Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
           }
 
-          # User Setup
-          $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
-          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "TempUser" -Password $securePass -AccountNeverExpires | Out-Null
-          Add-LocalGroupMember -Group "Administrators" -Member "TempUser"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-          
-          # Wait for jobs
+          # Wait for jobs and Install Tailscale
           Write-Host "Waiting for prerequisite downloads..."
           $jobs | Wait-Job | Out-Null
           $jobs | Receive-Job
           $jobs | Remove-Job
 
-          # Install Tailscale 
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           Write-Host "Prerequisite setup completed!"
 
-      - name: Install VCLibs Dependency (FIXED SYNTAX)
+      - name: Install VCLibs Dependency
         run: |
           Write-Host "Installing VCLibs (Required Framework)..."
           try {
-             # Nếu lệnh này thất bại, nó sẽ ném lỗi và làm dừng step này
              Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
              Write-Host "VCLibs Installed Successfully."
              Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
           } catch {
-             Write-Error "CRITICAL: VCLibs installation failed. Please check the VCLibs download link or file integrity."
-             # Setting Exit Code để đảm bảo step này thất bại và dừng Job
+             Write-Error "CRITICAL: VCLibs installation failed. WSA cannot be installed."
              exit 1 
           }
       
@@ -108,12 +109,12 @@ jobs:
              Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
           }
 
-          # Tải và Cài đặt WSA
+          # Tải và Cài đặt WSA (Link cứng bạn cung cấp)
           try {
               $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
               
               $wsaFile = "$wsaDir\wsa.7z"
-              Write-Host "Downloading WSA x64 from fixed link..."
+              Write-Host "Downloading WSA x64..."
               
               Invoke-WebRequest -Uri $wsaUrl -OutFile $wsaFile
               
