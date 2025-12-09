@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA Final Fix x64/ARM64)
+name: TikTok Event Automation (WSA Final URL Provided)
 
 on:
   workflow_dispatch:
@@ -71,8 +71,8 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
 
-          # 4. Cài đặt WSA (FIX LỌC KIẾN TRÚC)
-          Write-Host "Starting WSA installation..."
+          # 4. Cài đặt WSA (Dùng Link Cứng MỚI)
+          Write-Host "Starting WSA installation using your provided URL..."
           $wsaDir = "C:\WSA"
           New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
           
@@ -85,30 +85,13 @@ jobs:
              Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
           }
 
-          # 4b. Lấy danh sách release mới nhất và LỌC x64
+          # 4b. Tải và Cài đặt WSA (LINK CỨNG MỚI BẠN CUNG CẤP)
           try {
-              $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/MustardChef/WSABuilds/releases"
+              # URL CUNG CẤP BỞI USER
+              $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
               
-              # *** FIX: LỌC RELEASE CHỈ CHỨA x64, LOẠI BỎ ARM64 ***
-              $x64Releases = $releases | Where-Object { $_.name -like "*x64*" -or $_.name -notlike "*arm64*" }
-              $latestRelease = $x64Releases | Select-Object -First 1
-              
-              if (-not $latestRelease) { throw "No valid x64 releases found on GitHub repo." }
-
-              Write-Host "SUCCESS! Found release: $($latestRelease.name)"
-
-              # Lọc tìm file 7z chứa Google Play
-              $asset = $latestRelease.assets | Where-Object { 
-                 $_.name -like "*x64*" -and $_.name -like "*MindTheGapps*" -and $_.name -like "*Magisk*" -and $_.name -like "*.7z"
-              } | Select-Object -First 1
-
-              if ($null -eq $asset) {
-                 throw "Release found but no valid 7z file inside matching all filters."
-              }
-
-              $wsaUrl = $asset.browser_download_url
               $wsaFile = "$wsaDir\wsa.7z"
-              Write-Host "Downloading from: $wsaUrl"
+              Write-Host "Downloading WSA x64 from fixed link..."
               
               Invoke-WebRequest -Uri $wsaUrl -OutFile $wsaFile
               
@@ -122,7 +105,7 @@ jobs:
                   Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
                   Write-Host "WSA Success!"
               } else {
-                  Write-Host "Error: AppxManifest.xml not found."
+                  throw "Error: AppxManifest.xml not found after extraction."
               }
           } catch {
               Write-Error "WSA INSTALL FAILED: $_"
@@ -152,12 +135,12 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (FINAL FIX APPLIED)"
+          Write-Host "RDP SESSION READY (FINAL LINK USED)"
           Write-Host "=========================================="
           Write-Host "IP: $env:TAILSCALE_IP"
           Write-Host "User: TempUser"
           Write-Host "Pass: $env:RDP_PASSWORD"
-          Write-Host "WSA: Search 'Play Store' in Start Menu"
+          Write-Host "WSA Status: Check 'Play Store' in Start Menu"
           Write-Host "=========================================="
 
       - name: Keep Alive
