@@ -64,17 +64,13 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # 4. Verify VCLibs (Windows 11 runner already has it)
+          # 4. Download VCLibs 14.0.33519.0 (exact version for WSA)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Verifying VCLibs..."
-              $vcLibs = Get-AppxPackage | Where-Object { $_.Name -like "*VCLibs*" }
-              if ($vcLibs) {
-                  Write-Host "✓ VCLibs already installed: $($vcLibs.Version)"
-              } else {
-                  Write-Host "Downloading VCLibs fallback..."
-                  $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-                  Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
-              }
+              Write-Host "Downloading VCLibs 14.0.33519.0..."
+              # Link trực tiếp đến version mà WSA cần
+              $vclibsUrl = "https://github.com/cinit/WSAPatch/releases/download/v1.0.0/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing
+              if (!(Test-Path "$env:TEMP\VCLibs.appx")) { throw "VCLibs download failed" }
           }
 
           # Wait for all jobs
@@ -99,25 +95,58 @@ jobs:
 
       - name: Install VCLibs Dependency
         run: |
-          Write-Host "Checking VCLibs Framework..."
+          Write-Host "Managing VCLibs Framework..."
           
-          # Kiểm tra xem đã có VCLibs chưa
-          $existing = Get-AppxPackage | Where-Object { $_.Name -like "*VCLibs*" }
+          # Kiểm tra VCLibs hiện tại
+          $existing = Get-AppxPackage -Name "*VCLibs*"
           
           if ($existing) {
-              Write-Host "✓ VCLibs already installed: $($existing.Version)"
-              Write-Host "Skipping installation (using existing version)"
-              Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
-          } else {
-              Write-Host "Installing VCLibs Framework..."
-              try {
-                 Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
-                 Write-Host "✓ VCLibs installed successfully"
-                 Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
-              } catch {
-                 Write-Warning "VCLibs installation skipped (may already exist): $_"
-                 # Không exit 1 vì có thể đã có sẵn version cao hơn
+              Write-Host "Current VCLibs: $($existing.Version)"
+              
+              # Nếu version < 14.0.33519 thì cần update
+              $targetVersion = [Version]"14.0.33519.0"
+              $currentVersion = [Version]$existing.Version
+              
+              if ($currentVersion -lt $targetVersion) {
+                  Write-Host "VCLibs version too old, installing newer version..."
+                  
+                  # Download VCLibs 14.0.33519.0 (version WSA cần)
+                  $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+                  Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing
+                  
+                  try {
+                      Add-AppxPackage -Path "$env:TEMP\VCLibs.appx" -ForceTargetApplicationShutdown -ErrorAction Stop
+                      Write-Host "✓ VCLibs updated successfully"
+                  } catch {
+                      # Nếu fail vì conflict, thử remove cũ rồi cài mới
+                      Write-Host "Attempting to replace old VCLibs..."
+                      try {
+                          Remove-AppxPackage -Package $existing.PackageFullName -AllUsers -ErrorAction SilentlyContinue
+                          Add-AppxPackage -Path "$env:TEMP\VCLibs.appx" -ErrorAction Stop
+                          Write-Host "✓ VCLibs replaced successfully"
+                      } catch {
+                          Write-Warning "Could not update VCLibs: $_"
+                      }
+                  }
+                  
+                  Remove-Item "$env:TEMP\VCLibs.appx" -Force -ErrorAction SilentlyContinue
+              } else {
+                  Write-Host "✓ VCLibs version is sufficient"
               }
+          } else {
+              Write-Host "No VCLibs found, installing..."
+              $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing
+              
+              try {
+                  Add-AppxPackage -Path "$env:TEMP\VCLibs.appx" -ErrorAction Stop
+                  Write-Host "✓ VCLibs installed successfully"
+              } catch {
+                  Write-Error "VCLibs installation failed: $_"
+                  exit 1
+              }
+              
+              Remove-Item "$env:TEMP\VCLibs.appx" -Force -ErrorAction SilentlyContinue
           }
       
       - name: Install WSA Package
