@@ -172,18 +172,38 @@ jobs:
                   $wsaPackage = Get-AppxPackage | Where-Object { $_.Name -like "*WindowsSubsystemForAndroid*" }
                   if ($wsaPackage) {
                       Write-Host "✓ WSA installed successfully: $($wsaPackage.Version)"
+                      
+                      # CRITICAL: Launch WSA để khởi động services
+                      Write-Host "Starting WSA for first time..."
+                      try {
+                          # Tìm WsaClient.exe
+                          $wsaPath = $wsaPackage.InstallLocation
+                          $wsaClient = Join-Path $wsaPath "WsaClient.exe"
+                          
+                          if (Test-Path $wsaClient) {
+                              Write-Host "Launching WsaClient..."
+                              Start-Process $wsaClient -WindowStyle Hidden
+                              Start-Sleep -Seconds 15
+                              
+                              # Verify WSA process running
+                              $wsaProcess = Get-Process "WsaClient","vmmemWSA" -ErrorAction SilentlyContinue
+                              if ($wsaProcess) {
+                                  Write-Host "✓ WSA is running!"
+                              } else {
+                                  Write-Warning "WSA launched but process not detected"
+                              }
+                          } else {
+                              Write-Warning "WsaClient.exe not found at: $wsaClient"
+                              Write-Host "WSA will need manual start from Start Menu"
+                          }
+                      } catch {
+                          Write-Warning "Could not auto-start WSA: $_"
+                          Write-Host "Please start WSA manually from Start Menu after RDP"
+                      }
                   } else {
                       Write-Warning "WSA package registered but not immediately visible"
                   }
                   
-                  # Try starting WSA service
-                  Start-Sleep -Seconds 5
-                  $wsaProcess = Get-Process "WsaClient" -ErrorAction SilentlyContinue
-                  if ($wsaProcess) {
-                      Write-Host "✓ WSA service is running"
-                  } else {
-                      Write-Host "Note: WSA may need manual start from Start Menu"
-                  }
               } else {
                   throw "AppxManifest.xml not found after extraction"
               }
@@ -225,13 +245,18 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "   RDP SESSION READY - ALL FIXES APPLIED"
+          Write-Host "   RDP SESSION READY - WSA INSTALLED"
           Write-Host "=========================================="
           Write-Host "IP Address : $env:TAILSCALE_IP"
           Write-Host "Username   : TempUser"
           Write-Host "Password   : $env:RDP_PASSWORD"
           Write-Host ""
-          Write-Host "WSA Status : Check 'Play Store' in Start Menu"
+          Write-Host "WSA Instructions:"
+          Write-Host "  1. Open Start Menu → Search 'Play Store'"
+          Write-Host "  2. Or: Win+R → shell:appsFolder\MicrosoftCorporationII.WindowsSubsystemForAndroid_8wekyb3d8bbwe!App"
+          Write-Host "  3. Sign in with Google account"
+          Write-Host "  4. Install TikTok from Play Store"
+          Write-Host ""
           Write-Host "Duration   : $env:DURATION minutes"
           Write-Host "=========================================="
           Write-Host ""
