@@ -64,13 +64,40 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # 4. Download VCLibs 14.0.33519.0 (exact version for WSA)
+          # 4. Try multiple VCLibs sources (fallback chain)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading VCLibs 14.0.33519.0..."
-              # Link trực tiếp đến version mà WSA cần
-              $vclibsUrl = "https://github.com/cinit/WSAPatch/releases/download/v1.0.0/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing
-              if (!(Test-Path "$env:TEMP\VCLibs.appx")) { throw "VCLibs download failed" }
+              Write-Host "Downloading VCLibs..."
+              $downloaded = $false
+              
+              # Source 1: Microsoft aka.ms (latest stable)
+              try {
+                  $url1 = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+                  Invoke-WebRequest -Uri $url1 -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing -TimeoutSec 30
+                  if (Test-Path "$env:TEMP\VCLibs.appx") { 
+                      $downloaded = $true
+                      Write-Host "Downloaded from aka.ms"
+                  }
+              } catch {
+                  Write-Host "aka.ms failed, trying backup..."
+              }
+              
+              # Source 2: Direct Microsoft CDN
+              if (-not $downloaded) {
+                  try {
+                      $url2 = "https://download.microsoft.com/download/C/0/8/C082BA16-495E-4BCE-B67B-69BD70F8E88E/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+                      Invoke-WebRequest -Uri $url2 -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing -TimeoutSec 30
+                      if (Test-Path "$env:TEMP\VCLibs.appx") { 
+                          $downloaded = $true
+                          Write-Host "Downloaded from Microsoft CDN"
+                      }
+                  } catch {
+                      Write-Host "Microsoft CDN failed"
+                  }
+              }
+              
+              if (-not $downloaded) {
+                  throw "All VCLibs download sources failed"
+              }
           }
 
           # Wait for all jobs
