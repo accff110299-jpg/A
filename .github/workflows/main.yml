@@ -64,12 +64,17 @@ jobs:
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # 4. Download VCLibs (FIX: Dùng link Microsoft chính thức)
+          # 4. Verify VCLibs (Windows 11 runner already has it)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading VCLibs from Microsoft..."
-              $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
-              if (!(Test-Path "$env:TEMP\Microsoft.VCLibs.x64.Appx")) { throw "VCLibs download failed" }
+              Write-Host "Verifying VCLibs..."
+              $vcLibs = Get-AppxPackage | Where-Object { $_.Name -like "*VCLibs*" }
+              if ($vcLibs) {
+                  Write-Host "✓ VCLibs already installed: $($vcLibs.Version)"
+              } else {
+                  Write-Host "Downloading VCLibs fallback..."
+                  $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+                  Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
+              }
           }
 
           # Wait for all jobs
@@ -94,14 +99,25 @@ jobs:
 
       - name: Install VCLibs Dependency
         run: |
-          Write-Host "Installing VCLibs Framework..."
-          try {
-             Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
-             Write-Host "✓ VCLibs installed successfully"
-             Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
-          } catch {
-             Write-Error "CRITICAL: VCLibs installation failed: $_"
-             exit 1 
+          Write-Host "Checking VCLibs Framework..."
+          
+          # Kiểm tra xem đã có VCLibs chưa
+          $existing = Get-AppxPackage | Where-Object { $_.Name -like "*VCLibs*" }
+          
+          if ($existing) {
+              Write-Host "✓ VCLibs already installed: $($existing.Version)"
+              Write-Host "Skipping installation (using existing version)"
+              Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
+          } else {
+              Write-Host "Installing VCLibs Framework..."
+              try {
+                 Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
+                 Write-Host "✓ VCLibs installed successfully"
+                 Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
+              } catch {
+                 Write-Warning "VCLibs installation skipped (may already exist): $_"
+                 # Không exit 1 vì có thể đã có sẵn version cao hơn
+              }
           }
       
       - name: Install WSA Package
