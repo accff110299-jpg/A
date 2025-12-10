@@ -126,33 +126,7 @@ jobs:
           $wsaDir = "C:\WSA"
           New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
           
-          # Install UI.Xaml dependency (REQUIRED)
-          try {
-             Write-Host "Installing UI.Xaml 2.8..."
-             
-             # Đóng Windows Terminal và các app có thể lock UI.Xaml
-             Get-Process -Name "WindowsTerminal" -ErrorAction SilentlyContinue | Stop-Process -Force
-             Get-Process -Name "wt" -ErrorAction SilentlyContinue | Stop-Process -Force
-             Start-Sleep -Seconds 2
-             
-             $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
-             Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx" -UseBasicParsing
-             
-             # Thử cài với ForceApplicationShutdown
-             Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ForceApplicationShutdown -ForceUpdateFromAnyVersion -ErrorAction Stop
-             Write-Host "✓ UI.Xaml installed"
-          } catch {
-             Write-Warning "UI.Xaml install issue: $_"
-             
-             # Fallback: Kiểm tra xem đã có UI.Xaml chưa
-             $existing = Get-AppxPackage | Where-Object { $_.Name -like "*Microsoft.UI.Xaml*" }
-             if ($existing) {
-                 Write-Host "✓ UI.Xaml already exists: $($existing.Version), continuing..."
-             } else {
-                 Write-Error "UI.Xaml installation failed completely"
-                 exit 1
-             }
-          }
+          Write-Host "Note: Skipping UI.Xaml - WSA build includes dependencies"
 
           # Download and Install WSA
           try {
