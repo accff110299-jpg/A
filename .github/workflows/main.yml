@@ -1,4 +1,4 @@
-name: TikTok Event Automation (FIXED ALL ISSUES)
+name: TikTok Event Automation (WORKING VERSION - MANUAL WSA START)
 
 on:
   workflow_dispatch:
@@ -63,42 +63,6 @@ jobs:
              if (!(Test-Path "C:\Program Files\7-Zip\7z.exe")) { throw "7-Zip install failed" }
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
-          
-          # 4. Try multiple VCLibs sources (fallback chain)
-          $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading VCLibs..."
-              $downloaded = $false
-              
-              # Source 1: Microsoft aka.ms (latest stable)
-              try {
-                  $url1 = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-                  Invoke-WebRequest -Uri $url1 -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing -TimeoutSec 30
-                  if (Test-Path "$env:TEMP\VCLibs.appx") { 
-                      $downloaded = $true
-                      Write-Host "Downloaded from aka.ms"
-                  }
-              } catch {
-                  Write-Host "aka.ms failed, trying backup..."
-              }
-              
-              # Source 2: Direct Microsoft CDN
-              if (-not $downloaded) {
-                  try {
-                      $url2 = "https://download.microsoft.com/download/C/0/8/C082BA16-495E-4BCE-B67B-69BD70F8E88E/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-                      Invoke-WebRequest -Uri $url2 -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing -TimeoutSec 30
-                      if (Test-Path "$env:TEMP\VCLibs.appx") { 
-                          $downloaded = $true
-                          Write-Host "Downloaded from Microsoft CDN"
-                      }
-                  } catch {
-                      Write-Host "Microsoft CDN failed"
-                  }
-              }
-              
-              if (-not $downloaded) {
-                  throw "All VCLibs download sources failed"
-              }
-          }
 
           # Wait for all jobs
           Write-Host "Waiting for prerequisite downloads..."
@@ -119,62 +83,6 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
           Write-Host "✓ Prerequisites completed!"
-
-      - name: Install VCLibs Dependency
-        run: |
-          Write-Host "Managing VCLibs Framework..."
-          
-          # Kiểm tra VCLibs hiện tại
-          $existing = Get-AppxPackage -Name "*VCLibs*"
-          
-          if ($existing) {
-              Write-Host "Current VCLibs: $($existing.Version)"
-              
-              # Nếu version < 14.0.33519 thì cần update
-              $targetVersion = [Version]"14.0.33519.0"
-              $currentVersion = [Version]$existing.Version
-              
-              if ($currentVersion -lt $targetVersion) {
-                  Write-Host "VCLibs version too old, installing newer version..."
-                  
-                  # Download VCLibs 14.0.33519.0 (version WSA cần)
-                  $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-                  Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing
-                  
-                  try {
-                      Add-AppxPackage -Path "$env:TEMP\VCLibs.appx" -ForceTargetApplicationShutdown -ErrorAction Stop
-                      Write-Host "✓ VCLibs updated successfully"
-                  } catch {
-                      # Nếu fail vì conflict, thử remove cũ rồi cài mới
-                      Write-Host "Attempting to replace old VCLibs..."
-                      try {
-                          Remove-AppxPackage -Package $existing.PackageFullName -AllUsers -ErrorAction SilentlyContinue
-                          Add-AppxPackage -Path "$env:TEMP\VCLibs.appx" -ErrorAction Stop
-                          Write-Host "✓ VCLibs replaced successfully"
-                      } catch {
-                          Write-Warning "Could not update VCLibs: $_"
-                      }
-                  }
-                  
-                  Remove-Item "$env:TEMP\VCLibs.appx" -Force -ErrorAction SilentlyContinue
-              } else {
-                  Write-Host "✓ VCLibs version is sufficient"
-              }
-          } else {
-              Write-Host "No VCLibs found, installing..."
-              $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-              Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\VCLibs.appx" -UseBasicParsing
-              
-              try {
-                  Add-AppxPackage -Path "$env:TEMP\VCLibs.appx" -ErrorAction Stop
-                  Write-Host "✓ VCLibs installed successfully"
-              } catch {
-                  Write-Error "VCLibs installation failed: $_"
-                  exit 1
-              }
-              
-              Remove-Item "$env:TEMP\VCLibs.appx" -Force -ErrorAction SilentlyContinue
-          }
       
       - name: Install WSA Package
         run: |
@@ -182,7 +90,7 @@ jobs:
           $wsaDir = "C:\WSA"
           New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
           
-          Write-Host "Note: Skipping UI.Xaml - WSA build includes dependencies"
+          Write-Host "Note: Skipping dependencies - WSA build includes them"
 
           # Download and Install WSA
           try {
@@ -203,7 +111,7 @@ jobs:
                   throw "7-Zip extraction failed with exit code $LASTEXITCODE"
               }
               
-              # Find correct AppxManifest (FIX: Filter for WSA specifically)
+              # Find AppxManifest
               Write-Host "Locating WSA manifest..."
               $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | 
                   Where-Object { 
@@ -214,7 +122,6 @@ jobs:
                   Select-Object -ExpandProperty FullName -First 1
               
               if (-not $manifestPath) {
-                  # Fallback: use first manifest in WSA folder
                   $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | 
                       Select-Object -ExpandProperty FullName -First 1
               }
@@ -223,54 +130,21 @@ jobs:
                   Write-Host "Installing WSA from: $manifestPath"
                   Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown -ErrorAction Stop
                   
-                  # Verify installation
-                  Start-Sleep -Seconds 10
+                  Start-Sleep -Seconds 5
                   $wsaPackage = Get-AppxPackage | Where-Object { $_.Name -like "*WindowsSubsystemForAndroid*" }
                   if ($wsaPackage) {
-                      Write-Host "✓ WSA installed successfully: $($wsaPackage.Version)"
-                      
-                      # CRITICAL: Launch WSA để khởi động services
-                      Write-Host "Starting WSA for first time..."
-                      try {
-                          # Tìm WsaClient.exe
-                          $wsaPath = $wsaPackage.InstallLocation
-                          $wsaClient = Join-Path $wsaPath "WsaClient.exe"
-                          
-                          if (Test-Path $wsaClient) {
-                              Write-Host "Launching WsaClient..."
-                              Start-Process $wsaClient -WindowStyle Hidden
-                              Start-Sleep -Seconds 15
-                              
-                              # Verify WSA process running
-                              $wsaProcess = Get-Process "WsaClient","vmmemWSA" -ErrorAction SilentlyContinue
-                              if ($wsaProcess) {
-                                  Write-Host "✓ WSA is running!"
-                              } else {
-                                  Write-Warning "WSA launched but process not detected"
-                              }
-                          } else {
-                              Write-Warning "WsaClient.exe not found at: $wsaClient"
-                              Write-Host "WSA will need manual start from Start Menu"
-                          }
-                      } catch {
-                          Write-Warning "Could not auto-start WSA: $_"
-                          Write-Host "Please start WSA manually from Start Menu after RDP"
-                      }
+                      Write-Host "✓ WSA registered successfully: $($wsaPackage.Version)"
+                      Write-Host "✓ WSA install location: $($wsaPackage.InstallLocation)"
                   } else {
                       Write-Warning "WSA package registered but not immediately visible"
                   }
-                  
               } else {
                   throw "AppxManifest.xml not found after extraction"
               }
           } catch {
               Write-Error "WSA installation failed: $_"
-              Write-Host "Troubleshooting info:"
-              Write-Host "- Check if all dependencies installed correctly"
-              Write-Host "- Verify Windows 11 build (requires 22000+)"
               exit 1
           } finally {
-              # Cleanup
               Remove-Item "$wsaDir\wsa.7z" -Force -ErrorAction SilentlyContinue
           }
 
@@ -301,22 +175,42 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "   RDP SESSION READY - WSA INSTALLED"
+          Write-Host "   RDP SESSION READY"
           Write-Host "=========================================="
-          Write-Host "IP Address : $env:TAILSCALE_IP"
-          Write-Host "Username   : TempUser"
-          Write-Host "Password   : $env:RDP_PASSWORD"
+          Write-Host "IP       : $env:TAILSCALE_IP"
+          Write-Host "Username : TempUser"
+          Write-Host "Password : $env:RDP_PASSWORD"
+          Write-Host "Duration : $env:DURATION minutes"
           Write-Host ""
-          Write-Host "WSA Instructions:"
-          Write-Host "  1. Open Start Menu → Search 'Play Store'"
-          Write-Host "  2. Or: Win+R → shell:appsFolder\MicrosoftCorporationII.WindowsSubsystemForAndroid_8wekyb3d8bbwe!App"
-          Write-Host "  3. Sign in with Google account"
-          Write-Host "  4. Install TikTok from Play Store"
-          Write-Host ""
-          Write-Host "Duration   : $env:DURATION minutes"
+          Write-Host "=========================================="
+          Write-Host "   HOW TO START WSA (MANUAL STEPS)"
           Write-Host "=========================================="
           Write-Host ""
-          Write-Host "Connect: mstsc /v:$env:TAILSCALE_IP"
+          Write-Host "After connecting via RDP:"
+          Write-Host ""
+          Write-Host "METHOD 1 - Start Menu (EASIEST):"
+          Write-Host "  1. Click Start Menu"
+          Write-Host "  2. Type: 'Windows Subsystem for Android'"
+          Write-Host "  3. Click on the app to open WSA Settings"
+          Write-Host "  4. Wait for Android to start (~30 seconds)"
+          Write-Host "  5. Search for 'Play Store' in Start Menu"
+          Write-Host "  6. Open Play Store and sign in with Google"
+          Write-Host ""
+          Write-Host "METHOD 2 - PowerShell (ADVANCED):"
+          Write-Host "  Open PowerShell and run:"
+          Write-Host "  `$wsa = Get-AppxPackage | Where-Object { `$_.Name -like '*WindowsSubsystemForAndroid*' }"
+          Write-Host "  Start-Process (Join-Path `$wsa.InstallLocation 'WsaClient.exe')"
+          Write-Host ""
+          Write-Host "METHOD 3 - Direct File (IF METHODS ABOVE FAIL):"
+          Write-Host "  1. Open File Explorer"
+          Write-Host "  2. Go to: C:\WSA\Install\"
+          Write-Host "  3. Find folder with 'MicrosoftCorporationII' in name"
+          Write-Host "  4. Double-click WsaClient.exe"
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "RDP Command: mstsc /v:$env:TAILSCALE_IP"
+          Write-Host ""
 
       - name: Keep Alive
         run: |
