@@ -1,4 +1,4 @@
-name: TikTok Event Automation (WSA FINAL VERSION - FIX VCLibs LINK)
+name: TikTok Event Automation (FIXED ALL ISSUES)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
 jobs:
   run-automation:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
 
     steps:
       - name: Validate Duration and Setup User
@@ -30,7 +30,7 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "TempUser"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-          Write-Host "User setup completed."
+          Write-Host "✓ User setup completed"
           
       - name: Setup Prerequisites (Parallel Download/Install)
         run: |
@@ -51,100 +51,165 @@ jobs:
             Write-Host "Downloading Tailscale..."
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
+            if (!(Test-Path "$env:TEMP\tailscale.msi")) { throw "Tailscale download failed" }
           }
           
           # 3. Install 7-Zip
           $jobs += Start-Job -ScriptBlock {
              Write-Host "Installing 7-Zip..."
              $sevenZipUrl = "https://www.7-zip.org/a/7z2301-x64.msi"
-             Invoke-WebRequest -Uri $sevenZipUrl -OutFile "$env:TEMP\7zip.msi"
+             Invoke-WebRequest -Uri $sevenZipUrl -OutFile "$env:TEMP\7zip.msi" -UseBasicParsing
              Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\7zip.msi", "/quiet", "/norestart" -Wait -NoNewWindow
+             if (!(Test-Path "C:\Program Files\7-Zip\7z.exe")) { throw "7-Zip install failed" }
              Remove-Item "$env:TEMP\7zip.msi" -Force -ErrorAction SilentlyContinue
           }
           
-          # 4. Download VCLibs Dependency (SỬ DỤNG LINK CŨ THEO YÊU CẦU CỦA BẠN)
+          # 4. Download VCLibs (FIX: Dùng link Microsoft chính thức)
           $jobs += Start-Job -ScriptBlock {
-              Write-Host "Downloading Microsoft VCLibs from preferred link..."
-              $vclibsUrl = "https://raw.githubusercontent.com/aL3891/AppxInstaller/master/StandaloneMsi/Dependencies/Microsoft.VCLibs.x64.14.00.appx"
+              Write-Host "Downloading VCLibs from Microsoft..."
+              $vclibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
               Invoke-WebRequest -Uri $vclibsUrl -OutFile "$env:TEMP\Microsoft.VCLibs.x64.Appx" -UseBasicParsing
+              if (!(Test-Path "$env:TEMP\Microsoft.VCLibs.x64.Appx")) { throw "VCLibs download failed" }
           }
 
-          # Wait for jobs and Install Tailscale
+          # Wait for all jobs
           Write-Host "Waiting for prerequisite downloads..."
           $jobs | Wait-Job | Out-Null
-          $jobs | Receive-Job
+          
+          # Check job results
+          foreach ($job in $jobs) {
+              $result = Receive-Job -Job $job
+              Write-Host $result
+              if ($job.State -eq 'Failed') {
+                  throw "One or more prerequisite jobs failed"
+              }
+          }
           $jobs | Remove-Job
 
+          # Install Tailscale
+          Write-Host "Installing Tailscale..."
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
-          Write-Host "Prerequisite setup completed!"
+          Write-Host "✓ Prerequisites completed!"
 
-      - name: Install VCLibs Dependency (Direct Appx Install)
+      - name: Install VCLibs Dependency
         run: |
           Write-Host "Installing VCLibs Framework..."
           try {
              Add-AppxPackage -Path "$env:TEMP\Microsoft.VCLibs.x64.Appx" -ErrorAction Stop
-             Write-Host "VCLibs Installed Successfully. Ready for WSA."
+             Write-Host "✓ VCLibs installed successfully"
              Remove-Item "$env:TEMP\Microsoft.VCLibs.x64.Appx" -Force -ErrorAction SilentlyContinue
           } catch {
-             Write-Error "CRITICAL: VCLibs installation failed."
+             Write-Error "CRITICAL: VCLibs installation failed: $_"
              exit 1 
           }
       
       - name: Install WSA Package
         run: |
-          Write-Host "Starting WSA installation using your provided URL..."
+          Write-Host "Starting WSA installation..."
           $wsaDir = "C:\WSA"
           New-Item -ItemType Directory -Force -Path $wsaDir | Out-Null
           
-          # Cài UI.Xaml (dependency phụ)
+          # Install UI.Xaml dependency (REQUIRED)
           try {
+             Write-Host "Installing UI.Xaml 2.8..."
              $depUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
-             Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx"
-             Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction SilentlyContinue
+             Invoke-WebRequest -Uri $depUrl -OutFile "$wsaDir\ui.xaml.appx" -UseBasicParsing
+             Add-AppxPackage -Path "$wsaDir\ui.xaml.appx" -ErrorAction Stop
+             Write-Host "✓ UI.Xaml installed"
           } catch {
-             Write-Host "Warning: UI.Xaml setup issue, trying to continue..."
+             Write-Error "UI.Xaml installation failed: $_"
+             exit 1
           }
 
-          # Tải và Cài đặt WSA (Link cứng bạn cung cấp trước đó)
+          # Download and Install WSA
           try {
               $wsaUrl = "https://github.com/MustardChef/WSABuilds/releases/download/Windows_11_2407.40000.4.0_LTS_7/WSA_2407.40000.4.0_x64_Release-Nightly-with-KernelSU-v1.0.5-MindTheGapps-13.0-RemovedAmazon.7z"
-              
               $wsaFile = "$wsaDir\wsa.7z"
-              Write-Host "Downloading WSA x64..."
               
-              Invoke-WebRequest -Uri $wsaUrl -OutFile $wsaFile
+              Write-Host "Downloading WSA (~1.5GB, please wait)..."
+              $ProgressPreference = 'SilentlyContinue'
+              Invoke-WebRequest -Uri $wsaUrl -OutFile $wsaFile -UseBasicParsing
               
-              Write-Host "Extracting 7z file..."
-              & "C:\Program Files\7-Zip\7z.exe" x $wsaFile "-o$wsaDir\Install" -y | Out-Null
+              if (!(Test-Path $wsaFile)) {
+                  throw "WSA download failed - file not found"
+              }
               
-              $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | Select-Object -ExpandProperty FullName -First 1
+              Write-Host "Extracting WSA package..."
+              $extractResult = & "C:\Program Files\7-Zip\7z.exe" x $wsaFile "-o$wsaDir\Install" -y
+              if ($LASTEXITCODE -ne 0) {
+                  throw "7-Zip extraction failed with exit code $LASTEXITCODE"
+              }
+              
+              # Find correct AppxManifest (FIX: Filter for WSA specifically)
+              Write-Host "Locating WSA manifest..."
+              $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | 
+                  Where-Object { 
+                      $content = Get-Content $_.FullName -Raw
+                      $content -match "MicrosoftCorporationII.WindowsSubsystemForAndroid" -or
+                      $content -match "WsaClient.exe"
+                  } | 
+                  Select-Object -ExpandProperty FullName -First 1
+              
+              if (-not $manifestPath) {
+                  # Fallback: use first manifest in WSA folder
+                  $manifestPath = Get-ChildItem -Path "$wsaDir\Install" -Recurse -Filter "AppxManifest.xml" | 
+                      Select-Object -ExpandProperty FullName -First 1
+              }
               
               if ($manifestPath) {
-                  Write-Host "Installing WSA..."
-                  Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown
-                  Write-Host "WSA Success! (FINALLY!)"
+                  Write-Host "Installing WSA from: $manifestPath"
+                  Add-AppxPackage -Register $manifestPath -ForceApplicationShutdown -ErrorAction Stop
+                  
+                  # Verify installation
+                  Start-Sleep -Seconds 10
+                  $wsaPackage = Get-AppxPackage | Where-Object { $_.Name -like "*WindowsSubsystemForAndroid*" }
+                  if ($wsaPackage) {
+                      Write-Host "✓ WSA installed successfully: $($wsaPackage.Version)"
+                  } else {
+                      Write-Warning "WSA package registered but not immediately visible"
+                  }
+                  
+                  # Try starting WSA service
+                  Start-Sleep -Seconds 5
+                  $wsaProcess = Get-Process "WsaClient" -ErrorAction SilentlyContinue
+                  if ($wsaProcess) {
+                      Write-Host "✓ WSA service is running"
+                  } else {
+                      Write-Host "Note: WSA may need manual start from Start Menu"
+                  }
               } else {
-                  throw "Error: AppxManifest.xml not found after extraction."
+                  throw "AppxManifest.xml not found after extraction"
               }
           } catch {
-              Write-Error "WSA INSTALL FAILED: $_"
+              Write-Error "WSA installation failed: $_"
+              Write-Host "Troubleshooting info:"
+              Write-Host "- Check if all dependencies installed correctly"
+              Write-Host "- Verify Windows 11 build (requires 22000+)"
               exit 1
+          } finally {
+              # Cleanup
+              Remove-Item "$wsaDir\wsa.7z" -Force -ErrorAction SilentlyContinue
           }
 
       - name: Connect Tailscale & Get IP
         run: |
+          Write-Host "Connecting to Tailscale..."
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-wsa-$env:GITHUB_RUN_ID --accept-routes --shields-up=false
           
           $tsIP = $null
-          for ($i = 1; $i -le 8; $i++) {
+          for ($i = 1; $i -le 12; $i++) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
-              if ($tsIP) { break }
-              Start-Sleep -Seconds 1
+              if ($tsIP) { 
+                  Write-Host "✓ Tailscale connected"
+                  break 
+              }
+              Write-Host "Waiting for Tailscale IP... ($i/12)"
+              Start-Sleep -Seconds 2
           }
           
           if (-not $tsIP) {
-              Write-Error "Failed to get Tailscale IP"
+              Write-Error "Failed to get Tailscale IP after 24 seconds"
               exit 1
           }
           
@@ -154,23 +219,33 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "RDP SESSION READY (FINAL FIX APPLIED)"
+          Write-Host "   RDP SESSION READY - ALL FIXES APPLIED"
           Write-Host "=========================================="
-          Write-Host "IP: $env:TAILSCALE_IP"
-          Write-Host "User: TempUser"
-          Write-Host "Pass: $env:RDP_PASSWORD"
-          Write-Host "WSA Status: Check 'Play Store' in Start Menu"
+          Write-Host "IP Address : $env:TAILSCALE_IP"
+          Write-Host "Username   : TempUser"
+          Write-Host "Password   : $env:RDP_PASSWORD"
+          Write-Host ""
+          Write-Host "WSA Status : Check 'Play Store' in Start Menu"
+          Write-Host "Duration   : $env:DURATION minutes"
           Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Connect: mstsc /v:$env:TAILSCALE_IP"
 
       - name: Keep Alive
         run: |
           $endTime = (Get-Date).AddMinutes($env:DURATION)
+          Write-Host "Session will end at: $endTime"
           while ((Get-Date) -lt $endTime) {
-              Start-Sleep -Seconds 10
+              $remaining = ($endTime - (Get-Date)).TotalMinutes
+              Write-Host "Time remaining: $([math]::Round($remaining, 1)) minutes"
+              Start-Sleep -Seconds 60
           }
+          Write-Host "Session time expired"
 
       - name: Cleanup
         if: always()
         run: |
+          Write-Host "Cleaning up..."
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
           Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
+          Write-Host "✓ Cleanup completed"
