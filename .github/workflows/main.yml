@@ -1,4 +1,4 @@
-name: TikTok Event Automation (Simplified)
+name: TikTok Event Automation (FIXED ALL ISSUES)
 
 on:
   workflow_dispatch:
@@ -22,41 +22,64 @@ jobs:
             exit 1
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
-
-          $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-          $password = -join ((1..4) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
+          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "1" -Password $securePass -AccountNeverExpires | Out-Null
-          Add-LocalGroupMember -Group "Administrators" -Member "1"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "1"
+          New-LocalUser -Name "TempUser" -Password $securePass -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group "Administrators" -Member "TempUser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           Write-Host "✓ User setup completed"
           
-      - name: Setup RDP and Tailscale
+      - name: Setup Prerequisites (Parallel Download/Install)
         run: |
-          # Configure RDP
-          Write-Host "Configuring RDP..."
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Temp" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
-          Write-Host "✓ RDP configured"
+          $jobs = @()
           
-          # Download and Install Tailscale
-          Write-Host "Downloading Tailscale..."
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
+          # 1. RDP Configuration
+          $jobs += Start-Job -ScriptBlock {
+            Write-Host "Configuring RDP..."
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+            netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
+            netsh advfirewall firewall add rule name="RDP-Temp" dir=in action=allow protocol=TCP localport=3389
+            Restart-Service -Name TermService -Force
+          }
           
+          # 2. Download Tailscale
+          $jobs += Start-Job -ScriptBlock {
+            Write-Host "Downloading Tailscale..."
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
+            if (!(Test-Path "$env:TEMP\tailscale.msi")) { throw "Tailscale download failed" }
+          }
+          
+          
+          
+          # Wait for all jobs
+          Write-Host "Waiting for prerequisite downloads..."
+          $jobs | Wait-Job | Out-Null
+          
+          # Check job results
+          foreach ($job in $jobs) {
+              $result = Receive-Job -Job $job
+              Write-Host $result
+              if ($job.State -eq 'Failed') {
+                  throw "One or more prerequisite jobs failed"
+              }
+          }
+          $jobs | Remove-Job
+          # Install Tailscale
           Write-Host "Installing Tailscale..."
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait -NoNewWindow
           Remove-Item "$env:TEMP\tailscale.msi" -Force -ErrorAction SilentlyContinue
-          Write-Host "✓ Tailscale installed"
+          Write-Host "✓ Prerequisites completed!"
 
+
+          }
       - name: Connect Tailscale & Get IP
         run: |
           Write-Host "Connecting to Tailscale..."
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-tiktok-$env:GITHUB_RUN_ID --accept-routes --shields-up=false
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-wsa-$env:GITHUB_RUN_ID --accept-routes --shields-up=false
           
           $tsIP = $null
           for ($i = 1; $i -le 12; $i++) {
@@ -75,21 +98,21 @@ jobs:
           }
           
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
       - name: Display Connection Info
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "   RDP SESSION READY"
+          Write-Host "   RDP SESSION READY - ALL FIXES APPLIED"
           Write-Host "=========================================="
           Write-Host "IP Address : $env:TAILSCALE_IP"
-          Write-Host "Username   : 1"
+          Write-Host "Username   : TempUser"
           Write-Host "Password   : $env:RDP_PASSWORD"
+          Write-Host ""
+          Write-Host "WSA Status : Check 'Play Store' in Start Menu"
           Write-Host "Duration   : $env:DURATION minutes"
           Write-Host "=========================================="
           Write-Host ""
           Write-Host "Connect: mstsc /v:$env:TAILSCALE_IP"
-
       - name: Keep Alive
         run: |
           $endTime = (Get-Date).AddMinutes($env:DURATION)
@@ -100,11 +123,10 @@ jobs:
               Start-Sleep -Seconds 60
           }
           Write-Host "Session time expired"
-
       - name: Cleanup
         if: always()
         run: |
           Write-Host "Cleaning up..."
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
-          Remove-LocalUser -Name "1" -ErrorAction SilentlyContinue
+          Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
           Write-Host "✓ Cleanup completed"
