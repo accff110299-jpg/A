@@ -11,17 +11,18 @@ on:
 jobs:
   run-automation:
     runs-on: windows-latest
-    timeout-minutes: 50 #Safety timeout
+    timeout-minutes: 50 # Safety timeout
 
     steps:
       - name: Validate Duration
         run: |
           $duration = [int]"${{ github.event.inputs.duration }}"
-          if ($duration -gt 50) {
+          if ($duration -gt 15) {
             Write-Error "Duration cannot exceed 15 minutes"
             exit 1
           }
           echo "DURATION=$duration" >> $env:GITHUB_ENV
+
       - name: Configure RDP (Minimal)
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -34,10 +35,27 @@ jobs:
             dir=in action=allow protocol=TCP localport=3389
           
           Restart-Service -Name TermService -Force
+
+      - name: Disable Password Complexity (temporary)
+        run: |
+          # Export current security policy
+          secedit /export /cfg C:\secpol.cfg
+          
+          # Tắt PasswordComplexity (từ 1 → 0)
+          (Get-Content C:\secpol.cfg) -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | Set-Content C:\secpol.cfg
+          
+          # Áp dụng lại policy
+          secedit /configure /db C:\Windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY
+          
+          # Dọn dẹp file tạm
+          Remove-Item C:\secpol.cfg -Force
+
       - name: Create Temporary User
         run: |
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
+          # Password 4 ký tự như bản gốc của mày
           $password = -join ((1..4) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
           New-LocalUser -Name "1" -Password $securePass -AccountNeverExpires
@@ -45,6 +63,7 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "1"
           
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
@@ -53,6 +72,7 @@ jobs:
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
+
       - name: Connect Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=tiktok-$env:GITHUB_RUN_ID
@@ -70,16 +90,18 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
       - name: Display Connection Info
         run: |
           Write-Host "`n========================================="
           Write-Host "TikTok Event Automation - RDP Access"
           Write-Host "========================================="
           Write-Host "IP Address: $env:TAILSCALE_IP"
-          Write-Host "Username: TempUser"
+          Write-Host "Username: 1"
           Write-Host "Password: $env:RDP_PASSWORD"
           Write-Host "Duration: $env:DURATION minutes"
           Write-Host "=========================================`n"
+
       - name: Run Timed Session
         run: |
           $endTime = (Get-Date).AddMinutes($env:DURATION)
@@ -94,6 +116,7 @@ jobs:
           }
           
           Write-Host "`nSession time expired. Cleaning up..."
+
       - name: Cleanup
         if: always()
         run: |
@@ -101,4 +124,7 @@ jobs:
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
           
           # Remove temporary user
-          Remove-LocalUser -Name "TempUser" -ErrorAction SilentlyContinue
+          Remove-LocalUser -Name "1" -ErrorAction SilentlyContinue
+          
+          # Remove firewall rule
+          netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
