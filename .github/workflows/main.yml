@@ -37,12 +37,12 @@ jobs:
       - name: Create Temporary User
         run: |
           $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%'
-          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          $password = -join ((1..4) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
-          New-LocalUser -Name "TempUser" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "TempUser"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TempUser"
+          New-LocalUser -Name "1" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "1"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "1"
           
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
       - name: Install Tailscale
