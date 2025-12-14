@@ -110,82 +110,6 @@ jobs:
             exit 1
           }
 
-      - name: Install Chocolatey
-        run: |
-          try {
-            Write-Host "Installing Chocolatey..."
-            Set-ExecutionPolicy Bypass -Scope Process -Force
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-            
-            # Verify installation
-            choco --version
-            Write-Host "✓ Chocolatey installed successfully"
-          } catch {
-            Write-Error "Failed to install Chocolatey: $_"
-            exit 1
-          }
-
-      - name: Install Visual Studio 2022 Community with C++
-        run: |
-          try {
-            Write-Host "Installing Visual Studio 2022 Community Edition..."
-            Write-Host "This will take 10-15 minutes. Please be patient..."
-            
-            # Download Visual Studio installer
-            $vsUrl = "https://aka.ms/vs/17/release/vs_community.exe"
-            $vsInstaller = "$env:TEMP\vs_community.exe"
-            
-            Write-Host "Downloading Visual Studio installer..."
-            Invoke-WebRequest -Uri $vsUrl -OutFile $vsInstaller -ErrorAction Stop
-            
-            # Install VS với Desktop development with C++ workload
-            Write-Host "Installing Visual Studio with C++ workload..."
-            $arguments = @(
-              '--quiet',
-              '--wait',
-              '--norestart',
-              '--nocache',
-              '--add', 'Microsoft.VisualStudio.Workload.NativeDesktop',
-              '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
-              '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22000',
-              '--add', 'Microsoft.VisualStudio.Component.VC.CMake.Project',
-              '--includeRecommended'
-            )
-            
-            $process = Start-Process -FilePath $vsInstaller -ArgumentList $arguments -Wait -PassThru
-            
-            if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
-              Write-Host "✓ Visual Studio installed successfully"
-            } else {
-              Write-Warning "Visual Studio installation completed with exit code: $($process.ExitCode)"
-            }
-            
-            Remove-Item $vsInstaller -Force -ErrorAction SilentlyContinue
-          } catch {
-            Write-Error "Failed to install Visual Studio: $_"
-            # Don't exit, continue with workflow
-          }
-
-      - name: Install Additional Development Tools
-        run: |
-          try {
-            Write-Host "Installing additional tools..."
-            
-            # Git
-            choco install git -y --no-progress
-            
-            # CMake
-            choco install cmake -y --no-progress
-            
-            # Python (useful for build scripts)
-            choco install python -y --no-progress
-            
-            Write-Host "✓ Additional tools installed"
-          } catch {
-            Write-Warning "Some tools may have failed to install: $_"
-          }
-
       - name: Display Connection Info
         run: |
           Write-Host "`n╔════════════════════════════════════════════════╗"
@@ -195,11 +119,6 @@ jobs:
           Write-Host "║ Username   : 1".PadRight(49) "║"
           Write-Host "║ Password   : 1".PadRight(49) "║"
           Write-Host "║ Duration   : $env:DURATION minutes".PadRight(49) "║"
-          Write-Host "╠════════════════════════════════════════════════╣"
-          Write-Host "║ Installed:                                     ║"
-          Write-Host "║  • Visual Studio 2022 Community                ║"
-          Write-Host "║  • Desktop development with C++                ║"
-          Write-Host "║  • Git, CMake, Python                          ║"
           Write-Host "╚════════════════════════════════════════════════╝`n"
 
       - name: Run Timed Session
