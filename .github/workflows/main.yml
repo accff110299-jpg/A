@@ -82,7 +82,7 @@ jobs:
             
             # Connect
             & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-              --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+              --authkey=tskey-auth-kgFJu1xQCZ11CNTRL-Jcun7T9DvWd2ej3UVqnjWdaRiR8Ce7LK `
               --hostname=tiktok-$env:GITHUB_RUN_ID `
               --accept-routes
             
