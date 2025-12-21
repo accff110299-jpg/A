@@ -14,7 +14,7 @@ run-automation:
 runs-on: windows-latest
 timeout-minutes: 180
 
-```
+
 steps:
   - name: Validate Duration
     run: |
