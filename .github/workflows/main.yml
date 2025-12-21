@@ -1,169 +1,185 @@
 name: TikTok Event Automation
 
 on:
-  workflow_dispatch:
-    inputs:
-      duration:
-        description: 'Duration in minutes (max 45)'
-        required: true
-        default: '180'
-        type: number
-jobs:
-  run-automation:
-    runs-on: windows-latest
-    timeout-minutes: 180
+workflow_dispatch:
+inputs:
+duration:
+description: ‘Duration in minutes (max 180)’
+required: true
+default: ‘180’
+type: number
 
-    steps:
-      - name: Validate Duration
-        run: |
-          $duration = [int]"${{ github.event.inputs.duration }}"
-          if ($duration -lt 1 -or $duration -gt 180) {
-            Write-Error "Duration must be between 1-45 minutes"
-            exit 1
-          }
-          echo "DURATION=$duration" >> $env:GITHUB_ENV
-      - name: Configure RDP
-        run: |
-          try {
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force -ErrorAction Stop
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force -ErrorAction Stop
-            
-            netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
-            netsh advfirewall firewall add rule name="RDP-Temp" `
-              dir=in action=allow protocol=TCP localport=3389 | Out-Null
-            
-            Restart-Service -Name TermService -Force -ErrorAction Stop
-            Write-Host "✓ RDP configured successfully"
-          } catch {
-            Write-Error "Failed to configure RDP: $_"
-            exit 1
-          }
-      - name: Setup User Account
-        run: |
-          try {
-            # Export và modify security policy
-            secedit /export /cfg C:\secpol.cfg | Out-Null
-            (Get-Content C:\secpol.cfg) -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | 
-              Set-Content C:\secpol.cfg
-            secedit /configure /db C:\Windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY /quiet | Out-Null
-            Remove-Item C:\secpol.cfg -Force
-            
-            # Password cố định = "1"
-            $password = "1"
-            $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-            
-            # Create user với username = "1"
-            New-LocalUser -Name "1" -Password $securePass -AccountNeverExpires -ErrorAction Stop | Out-Null
-            Add-LocalGroupMember -Group "Administrators" -Member "1" -ErrorAction Stop
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "1" -ErrorAction Stop
-            
-            echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-            Write-Host "✓ User account created successfully"
-          } catch {
-            Write-Error "Failed to setup user: $_"
-            exit 1
-          }
-      - name: Install & Connect Tailscale
-        run: |
-          try {
-            # Download và install
-            $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-            $installerPath = "$env:TEMP\tailscale.msi"
-            
-            Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
-            Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
-              -Wait -ErrorAction Stop
-            Remove-Item $installerPath -Force
-            
-            # Wait for Tailscale service
-            Start-Sleep -Seconds 5
-            
-            # Connect
-            & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-              --authkey=tskey-auth-kgFJu1xQCZ11CNTRL-Jcun7T9DvWd2ej3UVqnjWdaRiR8Ce7LK `
-              --hostname=tiktok-$env:GITHUB_RUN_ID `
-              --accept-routes
-            
-            # Get IP với retry logic
-            $tsIP = $null
-            $maxRetries = 15
-            for ($i = 1; $i -le $maxRetries; $i++) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
-              if ($tsIP) { break }
-              Write-Host "Waiting for Tailscale IP... ($i/$maxRetries)"
-              Start-Sleep -Seconds 2
-            }
-            
-            if (-not $tsIP) {
-              throw "Failed to get Tailscale IP after $maxRetries attempts"
-            }
-            
-            echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-            Write-Host "✓ Tailscale connected: $tsIP"
-          } catch {
-            Write-Error "Tailscale setup failed: $_"
-            exit 1
-          }
-      - name: Display Connection Info
-        run: |
-          Write-Host "`n╔════════════════════════════════════════════════╗"
-          Write-Host "║      TikTok Event Automation - RDP Info        ║"
-          Write-Host "╠════════════════════════════════════════════════╣"
-          Write-Host "║ IP Address : $env:TAILSCALE_IP".PadRight(49) "║"
-          Write-Host "║ Username   : 1".PadRight(49) "║"
-          Write-Host "║ Password   : 1".PadRight(49) "║"
-          Write-Host "║ Duration   : $env:DURATION minutes".PadRight(49) "║"
-          Write-Host "╚════════════════════════════════════════════════╝`n"
-      - name: Run Timed Session
-        run: |
-          $endTime = (Get-Date).AddMinutes($env:DURATION)
-          $startTime = Get-Date
-          
-          Write-Host "Session started  : $($startTime.ToString('HH:mm:ss'))"
-          Write-Host "Session will end : $($endTime.ToString('HH:mm:ss'))"
-          Write-Host ("-" * 60)
-          
-          while ((Get-Date) -lt $endTime) {
-            $now = Get-Date
-            $remaining = ($endTime - $now).TotalMinutes
-            $elapsed = ($now - $startTime).TotalMinutes
-            $progress = [math]::Round(($elapsed / $env:DURATION) * 100)
-            
-            Write-Host ("[{0:HH:mm:ss}] Progress: {1}% | Remaining: {2:F1} min" -f $now, $progress, $remaining)
-            Start-Sleep -Seconds 60
-          }
-          
-          Write-Host ("-" * 60)
-          Write-Host "✓ Session completed. Cleaning up..."
-      - name: Cleanup
-        if: always()
-        run: |
-          Write-Host "Starting cleanup..."
-          
-          # Disconnect Tailscale
-          try {
-            & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
-            Write-Host "✓ Tailscale disconnected"
-          } catch {
-            Write-Host "⚠ Tailscale cleanup skipped"
-          }
-          
-          # Remove user
-          try {
-            Remove-LocalUser -Name "1" -ErrorAction SilentlyContinue
-            Write-Host "✓ User removed"
-          } catch {
-            Write-Host "⚠ User cleanup skipped"
-          }
-          
-          # Remove firewall rule
-          try {
-            netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null | Out-Null
-            Write-Host "✓ Firewall rule removed"
-          } catch {
-            Write-Host "⚠ Firewall cleanup skipped"
-          }
-          
-          Write-Host "Cleanup completed.
+jobs:
+run-automation:
+runs-on: windows-latest
+timeout-minutes: 180
+
+```
+steps:
+  - name: Validate Duration
+    run: |
+      $duration = [int]"${{ github.event.inputs.duration }}"
+      if ($duration -lt 1 -or $duration -gt 180) {
+        Write-Error "Duration must be between 1-180 minutes"
+        exit 1
+      }
+      echo "DURATION=$duration" >> $env:GITHUB_ENV
+
+  - name: Configure RDP
+    run: |
+      try {
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                         -Name "fDenyTSConnections" -Value 0 -Force -ErrorAction Stop
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                         -Name "UserAuthentication" -Value 0 -Force -ErrorAction Stop
+        
+        netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null
+        netsh advfirewall firewall add rule name="RDP-Temp" `
+          dir=in action=allow protocol=TCP localport=3389 | Out-Null
+        
+        Restart-Service -Name TermService -Force -ErrorAction Stop
+        Write-Host "✓ RDP configured successfully"
+      } catch {
+        Write-Error "Failed to configure RDP: $_"
+        exit 1
+      }
+
+  - name: Setup User Account
+    run: |
+      try {
+        # Export và modify security policy
+        secedit /export /cfg C:\secpol.cfg | Out-Null
+        (Get-Content C:\secpol.cfg) -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | 
+          Set-Content C:\secpol.cfg
+        secedit /configure /db C:\Windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY /quiet | Out-Null
+        Remove-Item C:\secpol.cfg -Force
+        
+        # Password cố định = "1"
+        $password = "1"
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+        
+        # Create user với username = "1"
+        New-LocalUser -Name "1" -Password $securePass -AccountNeverExpires -ErrorAction Stop | Out-Null
+        Add-LocalGroupMember -Group "Administrators" -Member "1" -ErrorAction Stop
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "1" -ErrorAction Stop
+        
+        echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+        Write-Host "✓ User account created successfully"
+      } catch {
+        Write-Error "Failed to setup user: $_"
+        exit 1
+      }
+
+  - name: Install & Connect Tailscale
+    env:
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+    run: |
+      try {
+        # Kiểm tra auth key
+        if ([string]::IsNullOrEmpty($env:TAILSCALE_AUTHKEY)) {
+          throw "TAILSCALE_AUTHKEY secret is not set. Please add it to GitHub Secrets."
+        }
+        
+        # Download và install
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+        $installerPath = "$env:TEMP\tailscale.msi"
+        
+        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+        Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
+          -Wait -ErrorAction Stop
+        Remove-Item $installerPath -Force
+        
+        # Wait for Tailscale service
+        Start-Sleep -Seconds 5
+        
+        # Connect sử dụng secret
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+          --authkey=$env:TAILSCALE_AUTHKEY `
+          --hostname=tiktok-$env:GITHUB_RUN_ID `
+          --accept-routes
+        
+        # Get IP với retry logic
+        $tsIP = $null
+        $maxRetries = 15
+        for ($i = 1; $i -le $maxRetries; $i++) {
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
+          if ($tsIP) { break }
+          Write-Host "Waiting for Tailscale IP... ($i/$maxRetries)"
+          Start-Sleep -Seconds 2
+        }
+        
+        if (-not $tsIP) {
+          throw "Failed to get Tailscale IP after $maxRetries attempts"
+        }
+        
+        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+        Write-Host "✓ Tailscale connected: $tsIP"
+      } catch {
+        Write-Error "Tailscale setup failed: $_"
+        exit 1
+      }
+
+  - name: Display Connection Info
+    run: |
+      Write-Host "`n╔═══════════════════════════════════════════════╗"
+      Write-Host "║      TikTok Event Automation - RDP Info        ║"
+      Write-Host "╠═══════════════════════════════════════════════╣"
+      Write-Host "║ IP Address : $env:TAILSCALE_IP".PadRight(49) "║"
+      Write-Host "║ Username   : 1".PadRight(49) "║"
+      Write-Host "║ Password   : 1".PadRight(49) "║"
+      Write-Host "║ Duration   : $env:DURATION minutes".PadRight(49) "║"
+      Write-Host "╚═══════════════════════════════════════════════╝`n"
+
+  - name: Run Timed Session
+    run: |
+      $endTime = (Get-Date).AddMinutes($env:DURATION)
+      $startTime = Get-Date
+      
+      Write-Host "Session started  : $($startTime.ToString('HH:mm:ss'))"
+      Write-Host "Session will end : $($endTime.ToString('HH:mm:ss'))"
+      Write-Host ("-" * 60)
+      
+      while ((Get-Date) -lt $endTime) {
+        $now = Get-Date
+        $remaining = ($endTime - $now).TotalMinutes
+        $elapsed = ($now - $startTime).TotalMinutes
+        $progress = [math]::Round(($elapsed / $env:DURATION) * 100)
+        
+        Write-Host ("[{0:HH:mm:ss}] Progress: {1}% | Remaining: {2:F1} min" -f $now, $progress, $remaining)
+        Start-Sleep -Seconds 60
+      }
+      
+      Write-Host ("-" * 60)
+      Write-Host "✓ Session completed. Cleaning up..."
+
+  - name: Cleanup
+    if: always()
+    run: |
+      Write-Host "Starting cleanup..."
+      
+      # Disconnect Tailscale
+      try {
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
+        Write-Host "✓ Tailscale disconnected"
+      } catch {
+        Write-Host "⚠ Tailscale cleanup skipped"
+      }
+      
+      # Remove user
+      try {
+        Remove-LocalUser -Name "1" -ErrorAction SilentlyContinue
+        Write-Host "✓ User removed"
+      } catch {
+        Write-Host "⚠ User cleanup skipped"
+      }
+      
+      # Remove firewall rule
+      try {
+        netsh advfirewall firewall delete rule name="RDP-Temp" 2>$null | Out-Null
+        Write-Host "✓ Firewall rule removed"
+      } catch {
+        Write-Host "⚠ Firewall cleanup skipped"
+      }
+      
+      Write-Host "Cleanup completed."
+```
